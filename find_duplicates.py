@@ -501,6 +501,12 @@ def report_script(
     for dups in groups_of_duplicates:
         # Identify the original file
         orig = find_original(dups)
+        # Filter out hard links and the original itself
+        dups = [d for d in dups if d.inode() != orig.inode()]
+        # Continue with the next group if there were only hard links
+        if not dups:
+            continue
+        # Output the original for reference
         orig_quoted = shlex.quote(orig.path)
         print('# orig_path={} size={} mtime={} inode={} {}={}'.format(
             orig_quoted, orig.size(), orig.mtime(), orig.inode(),
@@ -509,8 +515,6 @@ def report_script(
         dups.sort(key=lambda d: (d.mtime(), d.inode(), d.path))
         # Output shell commands
         for dup in dups:
-            if dup is orig or dup.inode() == orig.inode():
-                continue
             dup_quoted = shlex.quote(dup.path)
             cmd = template.format(orig=orig_quoted, dup=dup_quoted)
             print(cmd, '#', dup.mtime(), dup.inode(), file=file)
