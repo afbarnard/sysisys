@@ -25,50 +25,54 @@ def resolve_path(path):
     return pathlib.Path(os.path.abspath(os.path.expanduser(str(path))))
 
 
-def run_command_pipe_errout(command):
+def run_command_read_out(command):
     logger = logging.getLogger(__name__ + '.run_command')
     logger.info('Running command: {!r} |& ...',
                 ' '.join(shlex.quote(arg) for arg in command))
     with subprocess.Popen(
             command,
             stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
             universal_newlines=True,
     ) as proc:
-        for line in proc.stdout:
-            yield line
+        yield from proc.stdout
 
 
 def gather_file_metadata_records(
         paths,
-        minimum_file_size=(1024**2), # 1MiB
-        maximum_file_size=(1024**5), # 1PiB
+        prune_patterns=(),
+        exclude_patterns=(),
+        min_file_size=None,
+        max_file_size=None,
 ):
     # Make sure the paths are absolute
     abspaths = [resolve_path(p) for p in paths]
-    # Run `find` to gather size, inode, and modification time of files
-    # that fall within a given size range
+    # Assemble `find` command to gather size, inode, and modification time of files
+    # that match the criteria in the arguments
     command = [
         'find',
         # Treat symlinks as files (do not follow them)
         '-P',
-        # Only look for files
-        '-type',
-        'f',
-        # Adjust sizes so that given sizes are included
-        '-size',
-        '+{}c'.format(minimum_file_size - 1),
-        '-size',
-        '-{}c'.format(maximum_file_size + 1),
-        # Return a (size, inode, mtime, path) record for each file
-        '-printf',
-        '%s %i %TY-%Tm-%TdT%TT %p\n',
     ]
     # Add the files and directories as starting points
-    for idx, path in enumerate(abspaths):
-        command.insert(2 + idx, str(path))
+    for path in abspaths:
+        command.append(str(path))
+    # Add prune patterns if given
+    for pattern in prune_patterns:
+        command.extend(('-ipath', pattern, '-prune', '-or'))
+    # Only look for files
+    command.extend(('-type', 'f'))
+    # Add exclude patterns if given
+    for pattern in exclude_patterns:
+        command.extend(('-not', '-ipath', pattern))
+    # Add size constraints if given
+    if isinstance(min_file_size, int) and min_file_size > 0:
+        command.extend(('-size', '+{}c'.format(min_file_size - 1)))
+    if isinstance(max_file_size, int) and max_file_size > 0:
+        command.extend(('-size', '-{}c'.format(max_file_size + 1)))
+    # Return a (size, inode, mtime, path) record for each file
+    command.extend(('-printf', '%s %i %TY-%Tm-%TdT%TT %p\n'))
     # Run command and process output
-    for line in run_command_pipe_errout(command):
+    for line in run_command_read_out(command):
         # Split the line into 4 pieces using whitespace
         size, inode, mtime, path = line.strip().split(maxsplit=3)
         yield (
@@ -193,7 +197,7 @@ def load_metadata(db_filename, paths):
     create_tables(db)
     # Gather file metadata
     metadata_records = gather_file_metadata_records(
-        paths, minimum_file_size=1)
+        paths, min_file_size=1) # FIXME take in and pass through args
     # Load the metadata into the DB
     load_metadata_records(metadata_records, db)
     # Create indexes (if they don't exist)
