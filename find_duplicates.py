@@ -152,7 +152,7 @@ def create_indexes(db):
     # Commit transaction
 
 
-def load_metadata_records(records, db, commit_interval=1000):
+def load_file_metadata_records(records, db, commit_interval=1000):
     record = next(records, None)
     while record is not None:
         # Start a new transaction
@@ -190,20 +190,32 @@ def load_metadata_records(records, db, commit_interval=1000):
 # TODO remove files that no longer exist from the DB
 
 
-def load_metadata(db_filename, paths):
+def load_file_metadata(
+        db_filename,
+        paths,
+        prune_patterns=(),
+        exclude_patterns=(),
+        min_file_size=None,
+        max_file_size=None,
+):
     # Connect to the DB
-    db = sqlite3.connect(db_filename)
-    # Create tables (if they don't exist)
-    create_tables(db)
-    # Gather file metadata
-    metadata_records = gather_file_metadata_records(
-        paths, min_file_size=1) # FIXME take in and pass through args
-    # Load the metadata into the DB
-    load_metadata_records(metadata_records, db)
-    # Create indexes (if they don't exist)
-    create_indexes(db)
-    # Close the connection
-    db.close()
+    logging.getLogger('sqlite3').info('Connecting to `{}`', db_filename)
+    with sqlite3.connect(db_filename) as db:
+        # Create tables (if they don't exist)
+        create_tables(db)
+        # Gather file metadata
+        metadata_records = gather_file_metadata_records(
+            paths,
+            prune_patterns,
+            exclude_patterns,
+            min_file_size,
+            max_file_size,
+        )
+        # Load the metadata into the DB
+        load_file_metadata_records(metadata_records, db)
+        # Create indexes (if they don't exist)
+        create_indexes(db)
+    # Connection to DB automatically closed
 
 
 def sort_slice(lst, start=None, stop=None, key=None, reverse=False):
@@ -536,7 +548,7 @@ def find_original_by_inodecount_mtime_inode_path(fmetas):
 def scan(paths, options):
     if not paths:
         paths = ('.',)
-    load_metadata(options['db'], paths)
+    load_file_metadata(options['db'], paths)
 
 
 def report(paths, options):
