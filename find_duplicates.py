@@ -286,10 +286,10 @@ def unix_nanos_to_datetime(ns):
 
 def checksum_file(
         filename,
-        chunk_size=(1024 * 64), # 64KiB
+        chunk_size=(2 ** 10 * 64), # 64KiB
         offset=0,
         hash_name='md5',
-        buffer_size=(1024 ** 2 * 10), # 10MiB
+        buffer_size=(2 ** 20 * 10), # 10MiB
         stat=None,
 ):
     # Get the hash function first as a way of checking the argument
@@ -338,7 +338,7 @@ def checksum_file(
 
 class FileMeta:
 
-    checksum_size = (1024 * 64) # 64KiB
+    checksum_size = (2 ** 10 * 64) # 64KiB
 
     hash_name = 'md5'
 
@@ -545,6 +545,10 @@ def report_script(
             cmd = template.format(orig=orig_quoted, dup=dup_quoted)
             print(cmd, '#', dup.mtime(), dup.inode(), file=file)
         print(file=file)
+
+
+def report_table(): # TODO
+    pass
 
 
 def find_original_by_inodecount_mtime_inode_path(fmetas):
