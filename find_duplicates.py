@@ -4,24 +4,34 @@
 # under the MIT License.  See `LICENSE.txt` for details.
 
 
+from enum import Enum
 import collections
 import datetime
 import hashlib
+import inspect
 import itertools as itools
 import operator
 import os.path
 import pathlib
+import pprint
 import shlex
 import sqlite3
 import subprocess
 import sys
+import re
 
+from barnapy import arguments
+from barnapy import files
 from barnapy import logging
+from barnapy import parse
+
+
+__version__ = '0.0.0'
 
 
 def resolve_path(path):
     # Convert to a string path because pathlib doesn't support expanding
-    # user directories
+    # user directories until Python 3.5
     return pathlib.Path(os.path.abspath(os.path.expanduser(str(path))))
 
 
@@ -545,21 +555,35 @@ def find_original_by_inodecount_mtime_inode_path(fmetas):
     return fmetas[0]
 
 
-def scan(paths, options):
-    if not paths:
-        paths = ('.',)
-    load_file_metadata(options['db'], paths)
+# Commands
 
 
-def report(paths, options):
-    db = sqlite3.connect(options['db'])
+# Alias
+scan = load_file_metadata
+
+
+def report(db_filename, dedup, paths):
+    logger = logging.getLogger(__name__ + '.report')
+    # Get the deduplication command template
+    ok, dedup, msg = interpret_dedup(dedup)
+    if not ok:
+        raise ValueError(msg)
+    template = (_dedup_styles_to_command_templates[dedup]
+                if dedup in _dedup_styles_to_command_templates
+                else dedup)
+    logger.info('Using deduplication command template: {!r}', template)
+    # Do the report
+    db = sqlite3.connect(db_filename)
     dups_groups = find_duplicates(db)
     report_script(
         dups_groups,
         find_original_by_inodecount_mtime_inode_path,
-        template=options['cmd'],
+        template=template,
     )
     db.close()
+
+
+_command_pattern = re.compile(r'\w+')
 
 
 _commands = collections.OrderedDict((
@@ -568,36 +592,297 @@ _commands = collections.OrderedDict((
 ))
 
 
-_default_options = {
-    'report_type': 'script',
-    'db': 'find_duplicates.sqlite',
-    'cmd': 'cp -a --reflink=always {orig} {dup}',
+# Main
+
+
+_dedup_styles_to_command_templates = {
+    'btrfs': 'cp -a --reflink=always {orig} {dup}',
+    'hardlink': 'ln -f {orig} {dup}',
+    'softlink': 'ln -sf {orig} {dup}',
 }
 
 
-def main(args):
-    logging.default_config()
-    logger = logging.getLogger(__name__ + '.main')
-    logger.info('Start')
-    commands = set()
-    options = dict(_default_options)
-    arg_idx = 0
-    while arg_idx < len(args) and args[arg_idx] in _commands:
-        commands.add(args[arg_idx])
-        arg_idx += 1
-    if not commands:
-        commands = _commands.keys()
-    for cmd in _commands:
-        if cmd in commands:
-            _commands[cmd](args[arg_idx:], options)
+def main_api(
+        commands=['scan', 'report'],
+        paths=['.'],
+        db_filename='find_duplicates.sqlite',
+        prune_patterns=[],
+        exclude_patterns=[],
+        min_file_size=(2 ** 20), # 1 MiB # TODO convert to integer with suffixes à la dd, head
+        max_file_size=None,
+        dedup='hardlink',
+        verbosity=logging.INFO,
+):
+    # Start logging and log runtime environment
+    logging.default_config(level=opts['verbosity'])
+    logger = logging.getLogger(__name__)
+    logger.info('find_duplicates.py {}', __version__)
+    logger.info('Python {}', sys.version.replace('\n', ' '))
+    logger.info('argv: {}', sys.argv)
+    logger.info('cwd: {}', os.getcwd())
+    logger.info('options:\n{}', pprint.pformat(opts))
+    # Get the arguments of this function as a dictionary
+    args = inspect.getargvalues(inspect.currentframe()).locals
+    # Execute commands in order
+    for cmd_name, cmd_func in _commands.items():
+        if cmd_name in opts['commands']:
+            logger.info('Running command: {}', cmd_name)
+            signature = inspect.signature(cmd_func)
+            kwargs = {k: args.get(k)
+                      for k in signature.parameters.keys()}
+            cmd_func(**kwargs)
+    # Done!
     logger.info('Done')
 
 
+# Interpreters for command line options
+
+
+def interpret_value_required(vals):
+    if vals and vals[-1] is not None:
+        return True, vals[-1], None
+    else:
+        return False, None, 'No value given'
+
+
+def interpret_read_path(path):
+    file = files.new(path)
+    if file.exists() and file.is_readable():
+        return True, path, None
+    else:
+        return False, None, 'Path does not exist: {!r}'.format(path)
+
+
+def interpret_keyword(word, keywords, error_message):
+    lower_word = word.lower()
+    if lower_word in keywords:
+        return True, lower_word, None
+    else:
+        return False, None, error_message.format(
+            word=word, keys=', '.join(sorted(keywords)))
+
+
+def interpret_size(size): # TODO where check for strictly positive size?
+    try:
+        return True, int(size), None
+    except:
+        pass
+    else:
+        return False, None, 'Bad size: {!r}'.format(size)
+
+
+def interpret_dedup(dedup):
+    if dedup in _dedup_styles_to_command_templates:
+        return True, dedup, None
+    # Use the presence of a space to differentiate deduplication styles
+    # and command templates
+    elif ' ' not in dedup:
+        return (
+            False, None,
+            'Unrecognized deduplication style: {}\n'
+            '    Known styles: {}'.format(
+                dedup,
+                ' '.join(_dedup_styles_to_command_templates.keys())))
+    for placeholder in ('{orig}', '{dup}'):
+        if placeholder not in dedup:
+            return (
+                False, None,
+                'No `{}` placeholder in deduplication command '
+                'template: {!r}'.format(placeholder, dedup))
+    return True, dedup, None
+
+
+def interpret_verbosity(verbosity):
+    if parse.is_int(verbosity):
+        return True, int(verbosity), None
+    elif verbosity.lower() in logging.levels:
+        return True, logging.levels[verbosity.lower()], None
+    else:
+        return (
+            False, None,
+            'Unrecognized verbosity: {}\n'
+            '    Recognized values: {}'.format(
+                verbosity, ' '.join(logging.levels.keys())))
+
+
+def compose_interpreters(value, *interpreters):
+    ok = True
+    message = None
+    for interpreter in interpreters:
+        ok, value, message = interpreter(value)
+        if not ok:
+            break
+    return ok, value, message
+
+
+_cli_options = {
+    # Options that are really informational commands
+    'help': None,
+    'version': None,
+
+    # Regular options
+    'db': (
+        'db_filename',
+        interpret_value_required,
+    ),
+    'prune': (
+        'prune_patterns',
+        interpret_value_required,
+    ),
+    'exclude': (
+        'exclude_patterns',
+        interpret_value_required,
+    ),
+    'min-size': (
+        'min_file_size',
+        lambda sizes: compose_interpreters(
+            sizes,
+            interpret_value_required,
+            interpret_size),
+    ),
+    'max-size': (
+        'max_file_size',
+        lambda sizes: compose_interpreters(
+            sizes,
+            interpret_value_required,
+            interpret_size),
+    ),
+    'dedup': (
+        'dedup',
+        lambda words: compose_interpreters(
+            words,
+            interpret_value_required,
+            interpret_dedup),
+    ),
+    'verbosity': (
+        'verbosity',
+        lambda verbosities: compose_interpreters(
+            verbosities,
+            interpret_value_required,
+            interpret_verbosity),
+    ),
+}
+
+
+class CliError(Exception):
+    pass
+
+
+class CliUsageError(CliError):
+    pass
+
+
+def print_usage(prog_name=sys.argv[0], file=sys.stdout):
+    usage_msg = 'Usage: {} (<option> | <command>)* <path>*'.format(
+        prog_name)
+    print(usage_msg, file=file)
+    print('Commands:', *_commands.keys(), file=file)
+    print('Options: ',
+          *('--' + k for k in sorted(_cli_options.keys())),
+          file=file)
+
+
+def print_version(file=sys.stdout):
+    print('find_duplicates.py', __version__, file=file)
+
+
+def main_args(args):
+    # Keyword arguments for `main_api`
+    kwargs = {}
+
+    # Parse arguments
+    options, positional_args = arguments.parse(args)
+
+    # Execute informational commands (which short-circuit regular
+    # execution)
+    if 'help' in options: # TODO change to actual command
+        print_usage()
+        return
+    if 'version' in options: # TODO change to actual command
+        print_version()
+        return
+
+    # Separate positional arguments into commands and paths.  The
+    # commands are any initial identifier-like strings that are not
+    # existing paths.
+    commands = []
+    pos_arg_idx = 0
+    for pos_arg in positional_args:
+        if (
+                # Arg is a command
+                pos_arg.lower() in _commands
+                # Or arg looks more like a command than a path
+                or (_command_pattern.fullmatch(pos_arg) is not None
+                    and not os.path.exists(pos_arg))):
+            commands.append(pos_arg)
+            pos_arg_idx += 1
+        else:
+            break
+    paths = positional_args[pos_arg_idx:]
+
+    # Validate commands
+    commands = [c.lower() for c in commands]
+    unrecognized_commands = set(commands) - _commands.keys()
+    # Order the unrecognized commands according to the command line to
+    # make the error more interpretable
+    unrecognized_commands = [
+        c for c in commands if c in unrecognized_commands]
+    if unrecognized_commands:
+        raise CliUsageError('Unrecognized command: {}'
+                            .format(unrecognized_commands[0]))
+    if commands:
+        kwargs['commands'] = commands
+
+    # Validate options
+    unrecognized_options = options.keys() - _cli_options.keys()
+    if unrecognized_options:
+        raise CliUsageError('Unrecognized option: --{}'
+                            .format(sorted(unrecognized_options)[0]))
+    for opt_name, opt_vals in options.items():
+        api_name, interpreter = _cli_options[opt_name]
+        ok, val, msg = interpreter(opt_vals)
+        if ok:
+            kwargs[api_name] = val
+        else:
+            raise CliUsageError('--{}: {}'.format(opt_name, msg))
+
+    # Validate paths
+    for idx, path in enumerate(paths):
+        ok, val, msg = interpret_read_path(path)
+        if ok:
+            paths[idx] = val
+        else:
+            raise CliError(msg)
+    if paths:
+        kwargs['paths'] = paths
+
+    # OK, good to go
+    main_api(**kwargs)
+
+
+class ExitStatus(Enum):
+    normal = 0
+    cli_error = 2
+
+
+def main_cli():
+    exit_status = ExitStatus.normal
+    try:
+        main_args(sys.argv[1:])
+    except CliError as e:
+        print('Error:', str(e), file=sys.stderr)
+        if isinstance(e, CliUsageError):
+            print_usage(file=sys.stderr)
+        exit_status = ExitStatus.cli_error
+    # Exit with the given status
+    sys.exit(exit_status.value)
+
+
 if __name__ == '__main__':
-    main(sys.argv[1:])
+    main_cli()
 
 
 # head --bytes 40K Fedora-Workstation-Live-x86_64-26-1.5.iso | md5sum
 # tail --bytes 40K Fedora-Workstation-Live-x86_64-26-1.5.iso | md5sum
 
-# parameterize hash program
+# TODO parameterize hash program
