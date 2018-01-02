@@ -6,3 +6,6 @@
 
 # Ignore compiled Python
 __pycache__
+
+# Ignore synchronization directory
+sync
