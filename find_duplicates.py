@@ -617,19 +617,19 @@ def main_api(
         dedup='hardlink',
         verbosity=logging.INFO,
 ):
+    # Get the arguments of this function as a dictionary
+    args = inspect.getargvalues(inspect.currentframe()).locals
     # Start logging and log runtime environment
-    logging.default_config(level=opts['verbosity'])
+    logging.default_config(level=verbosity)
     logger = logging.getLogger(__name__)
     logger.info('find_duplicates.py {}', __version__)
     logger.info('Python {}', sys.version.replace('\n', ' '))
     logger.info('argv: {}', sys.argv)
     logger.info('cwd: {}', os.getcwd())
-    logger.info('options:\n{}', pprint.pformat(opts))
-    # Get the arguments of this function as a dictionary
-    args = inspect.getargvalues(inspect.currentframe()).locals
+    logger.info('options:\n{}', pprint.pformat(args))
     # Execute commands in order
     for cmd_name, cmd_func in _commands.items():
-        if cmd_name in opts['commands']:
+        if cmd_name in commands:
             logger.info('Running command: {}', cmd_name)
             signature = inspect.signature(cmd_func)
             kwargs = {k: args.get(k)
