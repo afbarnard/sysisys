@@ -5,18 +5,23 @@
 # Copyright (c) 2018 Aubrey Barnard.  This is free software released
 # under the MIT License.  See `LICENSE.txt` for details.
 
+# TODO "-" indicates a set on stdin
+# TODO add length?
+# TODO add equality?
+# TODO "make" as a special case of union?
+
 # Exit immediately on errors
 set -e
 
 # Log the given arguments as a message
 function log() {
     true
-    #echo "$(date +'%FT%T') fileset: ${@}" >&2
+    #echo "$(date +'%FT%T') filset: ${@}" >&2
 }
 
 # Print the given arguments as a message and die
 function die() {
-    echo "fileset: Error: ${@}" >&2
+    echo "filset: Error: ${@}" >&2
     exit 1
 }
 
@@ -49,6 +54,15 @@ function delete() {
     master="${1}"
     shift
     subtract "${master}" <(args_as_lines "${@}")
+}
+
+# Membership: does the first set have all the subsequent items? (which
+# is just intersection)
+function has() {
+    log "has(${@})"
+    master="${1}"
+    shift
+    intersect "${master}" <(args_as_lines "${@}")
 }
 
 # Union all the given sets
@@ -101,6 +115,7 @@ declare -A op_map
 op_map=(
     [add]=add
     [del]=delete
+    [has]=has
     [union]=union
     [inter]=intersect
     [symdif]=symmetric_difference
@@ -117,7 +132,7 @@ function do_set_op() {
     shift 3
     # Default master set to `/dev/null` for those operations that
     # require a master set
-    if [[ -z "${master}" && ${operation} =~ ^(add|del|minus)$ ]]; then
+    if [[ -z "${master}" && ${operation} =~ ^(add|del|has|minus)$ ]]; then
         master=/dev/null
     fi
     # Execute the operation, saving the result or letting it go to
@@ -168,7 +183,7 @@ function main() {
                     master=
                 fi
                 ;;
-            (add|del|union|inter|symdif|minus)
+            (add|del|has|union|inter|symdif|minus)
                 # Make a backup of the result file if requested
                 if [[ -n "${make_backup}" && -n "${result}" ]]; then
                     backup "${result}"
