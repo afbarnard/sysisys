@@ -107,7 +107,10 @@ function subtract() {
     if [[ ${#} -lt 1 ]]; then
         die "subtract: No sets to subtract"
     fi
-    intersect "${1}" <(symmetric_difference "${@}")
+    master="${1}"
+    shift
+    # Make the master unique and double the others, then keep the unique
+    sort <(sort --unique "${master}") <(sed -e p "${@}") | uniq --unique
 }
 
 # Map CLI set operations to functions
