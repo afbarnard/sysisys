@@ -1,5 +1,5 @@
 #!/bin/bash
-#
+
 # Treat files as sets of lines
 
 # Copyright (c) 2018 Aubrey Barnard.  This is free software released
@@ -65,6 +65,16 @@ function has() {
     intersect "${master}" <(args_as_lines "${@}")
 }
 
+# Non-membership: which of the second set is not in the first set?
+# (which is just set2 minus set1, but this allows the items of set2 to
+# be listed as arguments)
+function hasnt() {
+    log "hasnt(${@})"
+    master="${1}"
+    shift
+    subtract <(args_as_lines "${@}") "${master}"
+}
+
 # Union all the given sets
 function union() {
     log "union(${@})"
@@ -119,6 +129,7 @@ op_map=(
     [add]=add
     [del]=delete
     [has]=has
+    [hasnt]=hasnt
     [union]=union
     [inter]=intersect
     [symdif]=symmetric_difference
@@ -135,7 +146,7 @@ function do_set_op() {
     shift 3
     # Default master set to `/dev/null` for those operations that
     # require a master set
-    if [[ -z "${master}" && ${operation} =~ ^(add|del|has|minus)$ ]]; then
+    if [[ -z "${master}" && ${operation} =~ ^(add|del|has|hasnt|minus)$ ]]; then
         master=/dev/null
     fi
     # Execute the operation, saving the result or letting it go to
@@ -186,7 +197,7 @@ function main() {
                     master=
                 fi
                 ;;
-            (add|del|has|union|inter|symdif|minus)
+            (add|del|has|hasnt|union|inter|symdif|minus)
                 # Make a backup of the result file if requested
                 if [[ -n "${make_backup}" && -n "${result}" ]]; then
                     backup "${result}"
