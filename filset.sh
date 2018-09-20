@@ -81,7 +81,7 @@ function union() {
     if [[ ${#} -lt 1 ]]; then
         die "union: No sets to union"
     fi
-    sort --unique "${@}"
+    sort ${SORT_OPTS} --unique "${@}"
 }
 
 # Intersect all the given sets
@@ -93,8 +93,8 @@ function intersect() {
     # Combine sets and yield duplicates.  Make sure all the sets have
     # unique items first.
     for fileset; do
-        sort --unique "${fileset}"
-    done | sort | uniq --repeated
+        sort ${SORT_OPTS} --unique "${fileset}"
+    done | sort ${SORT_OPTS} | uniq --repeated
 }
 
 # Subtract the intersection from the union of all the given sets
@@ -107,8 +107,8 @@ function symmetric_difference() {
     # Combine sets and yield uniques.  Make sure all the sets have
     # unique items first.
     for fileset; do
-        sort --unique "${fileset}"
-    done | sort | uniq --unique
+        sort ${SORT_OPTS} --unique "${fileset}"
+    done | sort ${SORT_OPTS} | uniq --unique
 }
 
 # Subtract all the given sets from the first set
@@ -120,7 +120,7 @@ function subtract() {
     master="${1}"
     shift
     # Make the master unique and double the others, then keep the unique
-    sort <(sort --unique "${master}") <(sed -e p "${@}") | uniq --unique
+    sort ${SORT_OPTS} <(sort ${SORT_OPTS} --unique "${master}") <(sed -e p "${@}") | uniq --unique
 }
 
 # Map CLI set operations to functions
