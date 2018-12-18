@@ -35,6 +35,14 @@ def resolve_path(path):
     return pathlib.Path(os.path.abspath(os.path.expanduser(str(path))))
 
 
+def is_child_path(child, parent):
+    child = os.path.normpath(child)
+    parent = os.path.normpath(parent)
+    if not parent.endswith(os.path.sep):
+        parent += os.path.sep
+    return child.startswith(parent) and len(child) > len(parent)
+
+
 def run_command_read_out(command):
     logger = logging.getLogger(__name__ + '.run_command')
     logger.info('Running command: {!r} |& ...',
@@ -460,7 +468,6 @@ class FileMeta:
 
 
 def find_duplicates(db):
-    with db:
         # Get rows that support access by name
         db.row_factory = sqlite3.Row
         # Sort files by size
@@ -520,13 +527,14 @@ def find_duplicates(db):
 
 def report_script(
         groups_of_duplicates,
-        find_original,
+        pick_original,
+        cli_paths=None,
         template='ln -fv {orig} {dup}',
         file=sys.stdout,
 ):
     for dups in groups_of_duplicates:
         # Identify the original file
-        orig = find_original(dups)
+        orig = pick_original(dups, cli_paths)
         # Filter out hard links and the original itself
         dups = [d for d in dups if d.inode() != orig.inode()]
         # Continue with the next group if there were only hard links
@@ -551,12 +559,63 @@ def report_table(): # TODO
     pass
 
 
-def find_original_by_inodecount_mtime_inode_path(fmetas):
-    # Collect frequency of inodes to detect hard links
-    inode_counts = collections.Counter(f.inode() for f in fmetas)
-    fmetas.sort(key=lambda f: (
-        -inode_counts[f.inode()], f.mtime(), f.inode(), f.path))
-    return fmetas[0]
+# Attributes for picking an original
+
+
+def pick_orig__path(fmeta, fmetas=None, cli_paths=None):
+    return os.path.abspath(fmeta.path)
+
+def pick_orig__basename(fmeta, fmetas=None, cli_paths=None):
+    return os.path.basename(fmeta.path)
+
+def pick_orig__cli(fmeta, fmetas=None, cli_paths=None):
+    child = os.path.abspath(fmeta.path)
+    idx = 0
+    for parent in cli_paths:
+        if is_child_path(child, os.path.abspath(parent)):
+            return idx
+        idx += 1
+    return idx
+
+def pick_orig__mtime(fmeta, fmetas=None, cli_paths=None):
+    return fmeta.stat().st_mtime_ns
+
+def pick_orig__atime(fmeta, fmetas=None, cli_paths=None):
+    return fmeta.stat().st_atime_ns
+
+def pick_orig__ctime(fmeta, fmetas=None, cli_paths=None):
+    return fmeta.stat().st_ctime_ns
+
+def pick_orig__inode(fmeta, fmetas=None, cli_paths=None):
+    return fmeta.inode()
+
+def pick_orig__depth(fmeta, fmetas=None, cli_paths=None):
+    path = os.path.normpath(os.path.abspath(fmeta.path))
+    path = pathlib.Path(path)
+    return len(path.parts) - 1
+
+def pick_orig__n_links(fmeta, fmetas=None, cli_paths=None):
+    return fmeta.stat().st_nlink
+
+def pick_orig__uid(fmeta, fmetas=None, cli_paths=None):
+    return fmeta.stat().st_uid
+
+def pick_orig__gid(fmeta, fmetas=None, cli_paths=None):
+    return fmeta.stat().st_gid
+
+
+def curry(f, *args):
+    return lambda x: f(x, *args)
+
+def mk_pick_original(attr_getters, reverses=None):
+    def pick_original(fmetas, cli_paths=None):
+        fmetas = list(fmetas)
+        keys = []
+        for ag in attr_getters:
+            keys.append(curry(ag, fmetas, cli_paths))
+        multikey_sort(fmetas, keys, reverses)
+        return fmetas[0]
+    return pick_original
 
 
 # Commands
@@ -566,7 +625,7 @@ def find_original_by_inodecount_mtime_inode_path(fmetas):
 scan = load_file_metadata
 
 
-def report(db_filename, dedup, paths):
+def report(db_filename, dedup, paths, pick_original):
     logger = logging.getLogger(__name__ + '.report')
     # Get the deduplication command template
     ok, dedup, msg = interpret_dedup(dedup)
@@ -577,14 +636,10 @@ def report(db_filename, dedup, paths):
                 else dedup)
     logger.info('Using deduplication command template: {!r}', template)
     # Do the report
-    db = sqlite3.connect(db_filename)
-    dups_groups = find_duplicates(db)
-    report_script(
-        dups_groups,
-        find_original_by_inodecount_mtime_inode_path,
-        template=template,
-    )
-    db.close()
+    with sqlite3.connect(db_filename) as db:
+        dups_groups = find_duplicates(db)
+        report_script(
+            dups_groups, pick_original, paths, template=template)
 
 
 _command_pattern = re.compile(r'\w+')
@@ -614,11 +669,15 @@ def main_api(
         exclude_patterns=[],
         min_file_size=(2 ** 20), # 1 MiB # TODO convert to integer with suffixes à la dd, head
         max_file_size=None,
+        pick_original=mk_pick_original(
+            (pick_orig__mtime, pick_orig__n_links, pick_orig__inode),
+            (False, True, False),
+        ),
         dedup='hardlink',
         verbosity=logging.INFO,
 ):
     # Get the arguments of this function as a dictionary
-    args = inspect.getargvalues(inspect.currentframe()).locals
+    args = locals()
     # Start logging and log runtime environment
     logging.default_config(level=verbosity)
     logger = logging.getLogger(__name__)
@@ -709,6 +768,34 @@ def interpret_verbosity(verbosity):
                 verbosity, ' '.join(logging.levels.keys())))
 
 
+def interpret_pick_original_by(arg):
+    keys = []
+    revs = []
+    attrs = arg.split(',')
+    for attr in attrs:
+        attr = attr.strip()
+        if attr.endswith('<'):
+            reverse = False
+            attr = attr[:-1].strip()
+        elif attr.endswith('>'):
+            reverse = True
+            attr = attr[:-1].strip()
+        else:
+            reverse = False
+        func = globals().get('pick_orig__' + attr)
+        if func is None:
+            return (False, None,
+                    'Unrecognized attribute: {}\n'
+                    '    Recognized values: {}'
+                    .format(attr, ' '.join(
+                        k[11:] for k in sorted(globals().keys())
+                        if k.startswith('pick_orig__'))))
+        keys.append(func)
+        revs.append(reverse)
+    pick_original = mk_pick_original(keys, revs)
+    return True, pick_original, None
+
+
 def compose_interpreters(value, *interpreters):
     ok = True
     message = None
@@ -764,6 +851,13 @@ _cli_options = {
             verbosities,
             interpret_value_required,
             interpret_verbosity),
+    ),
+    'pick-original-by': (
+        'pick_original',
+        lambda arg: compose_interpreters(
+            arg,
+            interpret_value_required,
+            interpret_pick_original_by),
     ),
 }
 
