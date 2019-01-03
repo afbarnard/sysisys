@@ -1,6 +1,6 @@
 """Finds duplicate files and generates a script to deduplicate them"""
 
-# Copyright (c) 2017 Aubrey Barnard.  This is free software released
+# Copyright (c) 2019 Aubrey Barnard.  This is free software released
 # under the MIT License.  See `LICENSE.txt` for details.
 
 
@@ -26,7 +26,7 @@ from barnapy import logging
 from barnapy import parse
 
 
-__version__ = '0.0.0'
+__version__ = '0.1.0'
 
 
 def resolve_path(path):
@@ -604,7 +604,7 @@ def pick_orig__gid(fmeta, fmetas=None, cli_paths=None):
     return fmeta.stat().st_gid
 
 
-def curry(f, *args):
+def partially_apply_args(f, *args):
     return lambda x: f(x, *args)
 
 def mk_pick_original(attr_getters, reverses=None):
@@ -612,7 +612,7 @@ def mk_pick_original(attr_getters, reverses=None):
         fmetas = list(fmetas)
         keys = []
         for ag in attr_getters:
-            keys.append(curry(ag, fmetas, cli_paths))
+            keys.append(partially_apply_args(ag, fmetas, cli_paths))
         multikey_sort(fmetas, keys, reverses)
         return fmetas[0]
     return pick_original
@@ -983,4 +983,6 @@ if __name__ == '__main__':
 # head --bytes 40K Fedora-Workstation-Live-x86_64-26-1.5.iso | md5sum
 # tail --bytes 40K Fedora-Workstation-Live-x86_64-26-1.5.iso | md5sum
 
-# TODO parameterize hash program
+# TODO parameterize hash
+# TODO migrate to `argparse`
+# TODO compare extents to avoid unnecessary reflinks
