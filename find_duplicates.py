@@ -138,6 +138,7 @@ create table if not exists fmeta (
     checksum_beg text,
     checksum_end text,
     checksum_all text,
+    extents_hash text,
     primary key (path)
 )
 """.strip()
@@ -161,20 +162,22 @@ update fmeta set
   mtime = ?,
   checksum_beg = null,
   checksum_end = null,
-  checksum_all = null
+  checksum_all = null,
+  extents_hash = null
 where path = ?
 """.strip()
 
 _select_files_by_size_sql = """
 select size, inode, mtime, path, checksum_beg, checksum_end,
-    checksum_all
+    checksum_all, extents_hash
 from fmeta
 order by size asc
 """.strip()
 
-_update_checksums_sql = """
+_update_hashes_sql = """
 update fmeta
-set checksum_beg = ?, checksum_end = ?, checksum_all = ?
+set checksum_beg = ?, checksum_end = ?, checksum_all = ?,
+    extents_hash = ?
 where path = ?
 """.strip()
 
@@ -388,7 +391,7 @@ class FileMeta:
 
     checksum_size = (2 ** 10 * 64) # 64KiB
 
-    hash_name = 'md5'
+    hash_name = 'sha256'
 
     _logger = logging.getLogger('FileMeta')
 
@@ -401,6 +404,7 @@ class FileMeta:
             checksum_beg=None,
             checksum_end=None,
             checksum_all=None,
+            extents_hash=None,
     ):
         if not os.path.exists(path):
             raise FileNotFoundError(path)
@@ -410,23 +414,28 @@ class FileMeta:
         self._checksum_beg = checksum_beg
         self._checksum_end = checksum_end
         self._checksum_all = checksum_all
-        self._calculated_checksum = False
+        self._extents_hash = extents_hash
         self._stat = None
         self._mtime_ns = None
         self._mtime_str = None
-        self._extents = None
         if isinstance(mtime, int):
             self._mtime_ns = mtime
         else:
             self._mtime_str = mtime
+        self._called_stat = False
+        self._hashed_file = False
 
     @property
     def path(self):
         return self._path
 
     @property
-    def calculated_checksum(self):
-        return self._calculated_checksum
+    def called_stat(self):
+        return self._called_stat
+
+    @property
+    def hashed_file(self):
+        return self._hashed_file
 
     def stat(self):
         if self._stat is None:
@@ -464,7 +473,7 @@ class FileMeta:
                 hash_name=FileMeta.hash_name,
                 stat=self.stat(),
             )
-            self._calculated_checksum = True
+            self._hashed_file = True
         return self._checksum_beg
 
     def checksum_end(self):
@@ -478,7 +487,7 @@ class FileMeta:
                     hash_name=FileMeta.hash_name,
                     stat=self.stat(),
                 )
-                self._calculated_checksum = True
+                self._hashed_file = True
         return self._checksum_end
 
     def checksum_all(self):
@@ -492,25 +501,39 @@ class FileMeta:
                     hash_name=FileMeta.hash_name,
                     stat=self.stat(),
                 )
-                self._calculated_checksum = True
+                self._hashed_file = True
         return self._checksum_all
+
+    def extents_hash(self):
+        if self._extents_hash is None:
+            extents = file_extents(self.path, remove_path=True)
+            hash = hashlib.sha256()
+            for line in extents:
+                hash.update(bytes(line, encoding='utf-8'))
+            self._extents_hash = hash.hexdigest()
+            self._hashed_file = True
+        return self._extents_hash
 
     def raw_checksums(self):
         return (
             self._checksum_beg, self._checksum_end, self._checksum_all)
 
+    def raw_hashes(self):
+        return (
+            self._checksum_beg,
+            self._checksum_end,
+            self._checksum_all,
+            self._extents_hash,
+        )
+
     def __repr__(self):
         return (
             'FileMeta(path={!r}, size={!r}, mtime={!r}, inode={!r}, '
-            'checksum_beg={!r}, checksum_end={!r}, checksum_all={!r})'
+            'checksum_beg={!r}, checksum_end={!r}, checksum_all={!r}, '
+            'extents_hash={!r})'
             .format(self._path, self._size, self._mtime_str,
                     self._inode, self._checksum_beg, self._checksum_end,
-                    self._checksum_all))
-
-    def extents(self):
-        if self._extents is None:
-            self._extents = file_extents(self.path, remove_path=True)
-        return self._extents
+                    self._checksum_all, self._extents_hash))
 
 
 def find_duplicates(db):
@@ -534,6 +557,7 @@ def find_duplicates(db):
                         checksum_beg=fmeta_record['checksum_beg'],
                         checksum_end=fmeta_record['checksum_end'],
                         checksum_all=fmeta_record['checksum_all'],
+                        extents_hash=fmeta_record['extents_hash'],
                     )
                     files.append(fmeta)
                 # Ignore files that have disappeared
@@ -552,14 +576,15 @@ def find_duplicates(db):
                 operator.methodcaller('checksum_beg'),
                 operator.methodcaller('checksum_end'),
                 operator.methodcaller('checksum_all'),
+                operator.methodcaller('extents_hash'),
             ))
             # TODO avoid checksumming files with same inode
 
-            # Add checksums to the DB
+            # Add hashes to the DB
             for fmeta in files:
-                if fmeta.calculated_checksum:
-                    db.execute(_update_checksums_sql,
-                               fmeta.raw_checksums() + (fmeta.path,))
+                if fmeta.hashed_file:
+                    db.execute(_update_hashes_sql,
+                               fmeta.raw_hashes() + (fmeta.path,))
 
             # Yield the files in groups of duplicates.  Avoid
             # calculating additional checksums.
@@ -642,7 +667,7 @@ def organize_duplicates(duplicates, pick_original, cli_paths=None):
             pass
         elif dup.inode() == orig.inode():
             hard_links.append(dup)
-        elif dup.extents() == orig.extents():
+        elif dup.extents_hash() == orig.extents_hash():
             ref_links.append(dup)
         else:
             copies.append(dup)
@@ -1061,4 +1086,4 @@ if __name__ == '__main__':
 
 # TODO parameterize hash
 # TODO migrate to `argparse`
-# TODO incorporate hash of extents into DB
+# TODO separate finding duplicates (which involves potentially reading files) from reporting duplicates
