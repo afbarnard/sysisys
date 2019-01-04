@@ -571,35 +571,6 @@ def find_duplicates(db):
                     yield dups
 
 
-def report_script(
-        organized_duplicates,
-        template='ln -fv {orig} {dup}',
-        file=sys.stdout,
-):
-    for orgd_dups in organized_duplicates:
-        orig, hard_links, ref_links, dups = orgd_dups
-        # Continue with the next group if there were only links
-        if not dups:
-            continue
-        # Output the original for reference
-        orig_quoted = shlex.quote(orig.path)
-        print('# orig_path={} size={} mtime={} inode={} {}={}'.format(
-            orig_quoted, orig.size(), orig.mtime(), orig.inode(),
-            FileMeta.hash_name, orig.checksum_all()), file=file)
-        # Sort duplicates
-        dups.sort(key=lambda d: (d.mtime(), d.inode(), d.path))
-        # Output shell commands
-        for dup in dups:
-            dup_quoted = shlex.quote(dup.path)
-            cmd = template.format(orig=orig_quoted, dup=dup_quoted)
-            print(cmd, '#', dup.mtime(), dup.inode(), file=file)
-        print(file=file)
-
-
-def report_table(): # TODO
-    pass
-
-
 # Attributes for picking an original
 
 
@@ -681,6 +652,35 @@ def organize_duplicates(duplicates, pick_original, cli_paths=None):
 
 
 # Reports
+
+
+def report_script(
+        organized_duplicates,
+        template='ln -fv {orig} {dup}',
+        file=sys.stdout,
+):
+    for orgd_dups in organized_duplicates:
+        orig, hard_links, ref_links, dups = orgd_dups
+        # Continue with the next group if there were only links
+        if not dups:
+            continue
+        # Output the original for reference
+        orig_quoted = shlex.quote(orig.path)
+        print('# orig_path={} size={} mtime={} inode={} {}={}'.format(
+            orig_quoted, orig.size(), orig.mtime(), orig.inode(),
+            FileMeta.hash_name, orig.checksum_all()), file=file)
+        # Sort duplicates
+        dups.sort(key=lambda d: (d.mtime(), d.inode(), d.path))
+        # Output shell commands
+        for dup in dups:
+            dup_quoted = shlex.quote(dup.path)
+            cmd = template.format(orig=orig_quoted, dup=dup_quoted)
+            print(cmd, '#', dup.mtime(), dup.inode(), file=file)
+        print(file=file)
+
+
+def report_table(): # TODO
+    pass
 
 
 # Commands
