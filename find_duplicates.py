@@ -14,11 +14,11 @@ import operator
 import os.path
 import pathlib
 import pprint
+import re
 import shlex
 import sqlite3
 import subprocess
 import sys
-import re
 
 from barnapy import arguments
 from barnapy import files
@@ -101,6 +101,23 @@ def gather_file_metadata_records(
             mtime, # Leave as string
             path,
         )
+
+
+def file_extents(path, remove_path=False):
+    # Assemble `filefrag` command
+    command = [
+        'filefrag',
+        '-ev',
+        path,
+    ]
+    # Run command
+    lines = list(run_command_read_out(command))
+    # Remove the occurrences of `path` to make extents comparable
+    if remove_path:
+        path_pattern = re.compile(re.escape(path))
+        lines[1] = path_pattern.sub('*', lines[1])
+        lines[-1] = path_pattern.sub('*', lines[-1])
+    return lines
 
 
 _create_table_files_sql = """
@@ -374,6 +391,7 @@ class FileMeta:
         self._stat = None
         self._mtime_ns = None
         self._mtime_str = None
+        self._extents = None
         if isinstance(mtime, int):
             self._mtime_ns = mtime
         else:
@@ -466,6 +484,11 @@ class FileMeta:
                     self._inode, self._checksum_beg, self._checksum_end,
                     self._checksum_all))
 
+    def extents(self):
+        if self._extents is None:
+            self._extents = file_extents(self.path, remove_path=True)
+        return self._extents
+
 
 def find_duplicates(db):
         # Get rows that support access by name
@@ -526,18 +549,13 @@ def find_duplicates(db):
 
 
 def report_script(
-        groups_of_duplicates,
-        pick_original,
-        cli_paths=None,
+        organized_duplicates,
         template='ln -fv {orig} {dup}',
         file=sys.stdout,
 ):
-    for dups in groups_of_duplicates:
-        # Identify the original file
-        orig = pick_original(dups, cli_paths)
-        # Filter out hard links and the original itself
-        dups = [d for d in dups if d.inode() != orig.inode()]
-        # Continue with the next group if there were only hard links
+    for orgd_dups in organized_duplicates:
+        orig, hard_links, ref_links, dups = orgd_dups
+        # Continue with the next group if there were only links
         if not dups:
             continue
         # Output the original for reference
@@ -618,6 +636,30 @@ def mk_pick_original(attr_getters, reverses=None):
     return pick_original
 
 
+def organize_duplicates(duplicates, pick_original, cli_paths=None):
+    # Identify the original file
+    orig = pick_original(duplicates, cli_paths)
+    # Categorize files by relationship to original
+    hard_links = []
+    ref_links = []
+    copies = []
+    for dup in duplicates:
+        if dup is orig:
+            pass
+        elif dup.inode() == orig.inode():
+            hard_links.append(dup)
+        elif dup.extents() == orig.extents():
+            ref_links.append(dup)
+        else:
+            copies.append(dup)
+    assert hard_links or ref_links or copies
+    # Return organized duplicates
+    return (orig, hard_links, ref_links, copies)
+
+
+# Reports
+
+
 # Commands
 
 
@@ -638,8 +680,11 @@ def report(db_filename, dedup, paths, pick_original):
     # Do the report
     with sqlite3.connect(db_filename) as db:
         dups_groups = find_duplicates(db)
-        report_script(
-            dups_groups, pick_original, paths, template=template)
+        orgd_dups = map(
+            lambda dups: organize_duplicates(
+                dups, pick_original, paths),
+            dups_groups)
+        report_script(orgd_dups, template=template)
 
 
 _command_pattern = re.compile(r'\w+')
@@ -670,8 +715,11 @@ def main_api(
         min_file_size=(2 ** 20), # 1 MiB # TODO convert to integer with suffixes à la dd, head
         max_file_size=None,
         pick_original=mk_pick_original(
-            (pick_orig__mtime, pick_orig__n_links, pick_orig__inode),
-            (False, True, False),
+            (pick_orig__mtime,
+             pick_orig__n_links,
+             pick_orig__inode,
+             pick_orig__path),
+            (False, True, False, False),
         ),
         dedup='hardlink',
         verbosity=logging.INFO,
@@ -985,4 +1033,4 @@ if __name__ == '__main__':
 
 # TODO parameterize hash
 # TODO migrate to `argparse`
-# TODO compare extents to avoid unnecessary reflinks
+# TODO fix log name
