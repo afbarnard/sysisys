@@ -44,7 +44,7 @@ def is_child_path(child, parent):
 
 
 def run_command_read_out(command):
-    logger = logging.getLogger(__name__ + '.run_command')
+    logger = logging.getLogger('find_dups')
     logger.info('Running command: {!r} |& ...',
                 ' '.join(shlex.quote(arg) for arg in command))
     with subprocess.Popen(
@@ -90,6 +90,7 @@ def gather_file_metadata_records(
     # Return a (size, inode, mtime, path) record for each file
     command.extend(('-printf', '%s %i %TY-%Tm-%TdT%TT %p\n'))
     # Run command and process output
+    n_files = 0
     for line in run_command_read_out(command):
         # Split the line into 4 pieces using whitespace
         size, inode, mtime, path = line.strip().split(maxsplit=3)
@@ -101,7 +102,12 @@ def gather_file_metadata_records(
             mtime, # Leave as string
             path,
         )
+        n_files += 1
+    logger = logging.getLogger('find_dups')
+    logger.info('Scanned {} files', n_files)
 
+
+_n_file_extents = 0
 
 def file_extents(path, remove_path=False):
     # Assemble `filefrag` command
@@ -117,6 +123,9 @@ def file_extents(path, remove_path=False):
         path_pattern = re.compile(re.escape(path))
         lines[1] = path_pattern.sub('*', lines[1])
         lines[-1] = path_pattern.sub('*', lines[-1])
+    # Count calls
+    global _n_file_extents
+    _n_file_extents += 1
     return lines
 
 
@@ -188,6 +197,8 @@ def create_indexes(db):
 
 
 def load_file_metadata_records(records, db, commit_interval=1000):
+    n_inserts = 0
+    n_updates = 0
     record = next(records, None)
     while record is not None:
         # Start a new transaction
@@ -207,11 +218,13 @@ def load_file_metadata_records(records, db, commit_interval=1000):
                     # Insert the current record into the table
                     #print('inserting:\n', record)
                     db.execute(_insert_into_files_sql, record)
+                    n_inserts += 1
                 elif n_recs == 1:
                     # Update the record only if necessary
                     if existing_info[0] != record:
                         #print('updating:\n', existing_info[0], '\nto:\n', record)
                         db.execute(_update_files_meta_sql, record)
+                        n_updates += 1
                 else:
                     raise BaseException(
                         'Path has multiple records: {!r}'.format(path))
@@ -219,7 +232,10 @@ def load_file_metadata_records(records, db, commit_interval=1000):
                 insert_idx += 1
                 record = next(records, None)
         # Transaction commits
-        #print('commit')
+    # Log number of files processed
+    logger = logging.getLogger('find_dups')
+    logger.info('Inserted metadata for {} files', n_inserts)
+    logger.info('Updated metadata for {} files', n_updates)
 
 
 # TODO remove files that no longer exist from the DB
@@ -233,8 +249,9 @@ def load_file_metadata(
         min_file_size=None,
         max_file_size=None,
 ):
+    logger = logging.getLogger('find_dups')
     # Connect to the DB
-    logging.getLogger('sqlite3').info('Connecting to `{}`', db_filename)
+    logger.info('Connecting to DB `{}`', db_filename)
     with sqlite3.connect(db_filename) as db:
         # Create tables (if they don't exist)
         create_tables(db)
@@ -251,6 +268,7 @@ def load_file_metadata(
         # Create indexes (if they don't exist)
         create_indexes(db)
     # Connection to DB automatically closed
+    logger.info('Closed DB `{}`', db_filename)
 
 
 def sort_slice(lst, start=None, stop=None, key=None, reverse=False):
@@ -309,6 +327,8 @@ def unix_nanos_to_datetime(ns):
     return _unix_epoch_datetime + td
 
 
+_n_checksums = 0
+
 def checksum_file(
         filename,
         chunk_size=(2 ** 10 * 64), # 64KiB
@@ -320,7 +340,7 @@ def checksum_file(
     # Get the hash function first as a way of checking the argument
     hash_func = hashlib.new(hash_name)
     # Get the file size in order to resolve the offset and chunk size
-    logger = logging.getLogger(__name__ + '.checksum_file')
+    logger = logging.getLogger('find_dups')
     if stat is None:
         logger.debug('Stat: {!r}', filename)
         stat = os.stat(filename)
@@ -352,6 +372,9 @@ def checksum_file(
             # Break out of loop if EOF
             elif amount != 0:
                 break
+    # Count calls
+    global _n_checksums
+    _n_checksums += 1
     # Return the checksum
     return hash_func.hexdigest()
 
@@ -367,7 +390,7 @@ class FileMeta:
 
     hash_name = 'md5'
 
-    _logger = logging.getLogger(__name__ + '.FileMeta')
+    _logger = logging.getLogger('FileMeta')
 
     def __init__(
             self,
@@ -668,7 +691,7 @@ scan = load_file_metadata
 
 
 def report(db_filename, dedup, paths, pick_original):
-    logger = logging.getLogger(__name__ + '.report')
+    logger = logging.getLogger('find_dups')
     # Get the deduplication command template
     ok, dedup, msg = interpret_dedup(dedup)
     if not ok:
@@ -678,6 +701,7 @@ def report(db_filename, dedup, paths, pick_original):
                 else dedup)
     logger.info('Using deduplication command template: {!r}', template)
     # Do the report
+    logger.info('Connecting to DB `{}`', db_filename)
     with sqlite3.connect(db_filename) as db:
         dups_groups = find_duplicates(db)
         orgd_dups = map(
@@ -685,6 +709,7 @@ def report(db_filename, dedup, paths, pick_original):
                 dups, pick_original, paths),
             dups_groups)
         report_script(orgd_dups, template=template)
+    logger.info('Closed DB `{}`', db_filename)
 
 
 _command_pattern = re.compile(r'\w+')
@@ -742,6 +767,9 @@ def main_api(
             kwargs = {k: args.get(k)
                       for k in signature.parameters.keys()}
             cmd_func(**kwargs)
+    # Log stats
+    logger.info('Calculated {} checksums', _n_checksums)
+    logger.info('Retrieved extents of {} files', _n_file_extents)
     # Done!
     logger.info('Done')
 
@@ -1033,4 +1061,4 @@ if __name__ == '__main__':
 
 # TODO parameterize hash
 # TODO migrate to `argparse`
-# TODO fix log name
+# TODO incorporate hash of extents into DB
