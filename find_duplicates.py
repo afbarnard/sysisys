@@ -536,64 +536,90 @@ class FileMeta:
                     self._checksum_all, self._extents_hash))
 
 
+def fmeta_objs_from_records(fmeta_records):
+    for fmeta_record in fmeta_records:
+        try:
+            fmeta = FileMeta(
+                path=fmeta_record['path'],
+                size=fmeta_record['size'],
+                mtime=fmeta_record['mtime'],
+                inode=fmeta_record['inode'],
+                checksum_beg=fmeta_record['checksum_beg'],
+                checksum_end=fmeta_record['checksum_end'],
+                checksum_all=fmeta_record['checksum_all'],
+                extents_hash=fmeta_record['extents_hash'],
+            )
+            yield fmeta
+        # Ignore files that have disappeared
+        except FileNotFoundError:
+            pass
+
+
 def find_duplicates(db):
-        # Get rows that support access by name
-        db.row_factory = sqlite3.Row
-        # Sort files by size
-        cursor = db.execute(_select_files_by_size_sql)
-        # Process files in groups of the same size
-        for size, size_group in itools.groupby(
-                cursor, key=lambda t: t['size']):
-            # Convert the records into objects to make them sortable and
-            # modifiable
-            files = []
-            for fmeta_record in size_group:
-                try:
-                    fmeta = FileMeta(
-                        path=fmeta_record['path'],
-                        size=fmeta_record['size'],
-                        mtime=fmeta_record['mtime'],
-                        inode=fmeta_record['inode'],
-                        checksum_beg=fmeta_record['checksum_beg'],
-                        checksum_end=fmeta_record['checksum_end'],
-                        checksum_all=fmeta_record['checksum_all'],
-                        extents_hash=fmeta_record['extents_hash'],
-                    )
-                    files.append(fmeta)
-                # Ignore files that have disappeared
-                except FileNotFoundError:
-                    pass
+    # Get rows that support access by name
+    db.row_factory = sqlite3.Row
+    # Sort files by size
+    cursor = db.execute(_select_files_by_size_sql)
+    cursor.arraysize = 8192
+    # Convert the file records into objects to make them sortable and
+    # modifiable
+    fmetas = fmeta_objs_from_records(cursor)
+    # Group files by file size.  Distinguish duplicate files from others
+    # that happen to have the same size by checksumming the contents.
+    for _, size_group in itools.groupby(
+            fmetas, key=operator.methodcaller('size')):
+        files = list(size_group)
+        # Skip to the next group if there is only one file
+        if len(files) == 1:
+            continue
 
-            # Skip to the next group if there is only one file
-            if len(files) == 1:
-                continue
+        # Do a multi-key sort: only worry about the next key if the
+        # current key (and all earlier keys) are tied.  This calculates
+        # checksums only if necessary (due to the lazy nature of the
+        # methods).  For files that have the same checksums, calculate
+        # the hash of the file extents while we're at it.
+        multikey_sort(files, (
+            operator.methodcaller('checksum_beg'),
+            operator.methodcaller('checksum_end'),
+            operator.methodcaller('checksum_all'),
+            operator.methodcaller('extents_hash'),
+        ))
+        # TODO avoid checksumming files with same inode
 
-            # Do a multi-key sort: only worry about the next key if the
-            # current key (and all earlier keys) are tied.  This
-            # calculates checksums only if necessary (due to the lazy
-            # nature of the methods).
-            multikey_sort(files, (
-                operator.methodcaller('checksum_beg'),
-                operator.methodcaller('checksum_end'),
-                operator.methodcaller('checksum_all'),
-                operator.methodcaller('extents_hash'),
-            ))
-            # TODO avoid checksumming files with same inode
+        # Add hashes to the DB
+        for fmeta in files:
+            if fmeta.hashed_file:
+                db.execute(_update_hashes_sql,
+                           fmeta.raw_hashes() + (fmeta.path,))
 
-            # Add hashes to the DB
-            for fmeta in files:
-                if fmeta.hashed_file:
-                    db.execute(_update_hashes_sql,
-                               fmeta.raw_hashes() + (fmeta.path,))
 
-            # Yield the files in groups of duplicates.  Avoid
-            # calculating additional checksums.
-            for _, dups_group in itools.groupby(
-                    files, key=operator.methodcaller('raw_checksums')):
-                dups = list(dups_group)
-                # Yield only if there are multiple files that match
-                if len(dups) > 1:
-                    yield dups
+_select_duplicate_files_sql = """
+select size, inode, mtime, path, checksum_beg, checksum_end,
+    checksum_all, extents_hash
+from fmeta
+where checksum_beg is not null
+  and checksum_end is not null
+  and checksum_all is not null
+order by size, checksum_beg, checksum_end, checksum_all,
+         inode, extents_hash, mtime, path
+""".strip()
+
+def gather_duplicates(db):
+    # Get rows that support access by name
+    db.row_factory = sqlite3.Row
+    # Select duplicate files
+    cursor = db.execute(_select_duplicate_files_sql)
+    cursor.arraysize = 8192
+    # Convert file records to objects
+    files = fmeta_objs_from_records(cursor)
+    # Yield the files in groups of duplicates.  Avoid calculating
+    # additional checksums.
+    for _, dups_group in itools.groupby(
+            files, key=lambda f: (f.size(), f.raw_checksums())):
+        dups = list(dups_group)
+        # Yield only if there are multiple files that match
+        if len(dups) > 1:
+            yield dups
 
 
 # Attributes for picking an original
@@ -711,8 +737,12 @@ def report_table(): # TODO
 # Commands
 
 
-# Alias
-scan = load_file_metadata
+def find(db_filename):
+    logger = logging.getLogger('find_dups')
+    logger.info('Connecting to DB `{}`', db_filename)
+    with sqlite3.connect(db_filename) as db:
+        find_duplicates(db)
+    logger.info('Closed DB `{}`', db_filename)
 
 
 def report(db_filename, dedup, paths, pick_original):
@@ -728,7 +758,7 @@ def report(db_filename, dedup, paths, pick_original):
     # Do the report
     logger.info('Connecting to DB `{}`', db_filename)
     with sqlite3.connect(db_filename) as db:
-        dups_groups = find_duplicates(db)
+        dups_groups = gather_duplicates(db)
         orgd_dups = map(
             lambda dups: organize_duplicates(
                 dups, pick_original, paths),
@@ -741,7 +771,8 @@ _command_pattern = re.compile(r'\w+')
 
 
 _commands = collections.OrderedDict((
-    ('scan', scan),
+    ('scan', load_file_metadata),
+    ('find', find),
     ('report', report),
 ))
 
@@ -757,7 +788,7 @@ _dedup_styles_to_command_templates = {
 
 
 def main_api(
-        commands=['scan', 'report'],
+        commands=_commands.keys(),
         paths=['.'],
         db_filename='find_duplicates.sqlite',
         prune_patterns=[],
@@ -1086,4 +1117,3 @@ if __name__ == '__main__':
 
 # TODO parameterize hash
 # TODO migrate to `argparse`
-# TODO separate finding duplicates (which involves potentially reading files) from reporting duplicates
