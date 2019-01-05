@@ -78,7 +78,7 @@ def gather_file_metadata_records(
     # Add prune patterns if given
     for pattern in prune_patterns:
         command.extend(('-ipath', pattern, '-prune', '-or'))
-    # Only look for files
+    # Only look for files (ignores symlinks with -P)
     command.extend(('-type', 'f'))
     # Add exclude patterns if given
     for pattern in exclude_patterns:
@@ -172,6 +172,7 @@ _select_files_by_size_sql = """
 select size, inode, mtime, path, checksum_beg, checksum_end,
     checksum_all, extents_hash
 from fmeta
+{where_clause}
 order by size asc
 """.strip()
 
@@ -557,11 +558,25 @@ def fmeta_objs_from_records(fmeta_records):
             pass
 
 
-def find_duplicates(db):
+def find_duplicates(db, min_file_size=None, max_file_size=None):
+    # Build query and its parameters
+    where_clause = ''
+    params = {}
+    if min_file_size is not None or max_file_size is not None:
+        where_clause += 'where '
+    if min_file_size is not None:
+        where_clause += 'size >= :min_file_size'
+        params['min_file_size'] = min_file_size
+    if min_file_size is not None and max_file_size is not None:
+        where_clause += ' and '
+    if max_file_size is not None:
+        where_clause += 'size <= :max_file_size'
+        params['max_file_size'] = max_file_size
+    query = _select_files_by_size_sql.format(where_clause=where_clause)
     # Get rows that support access by name
     db.row_factory = sqlite3.Row
     # Sort files by size
-    cursor = db.execute(_select_files_by_size_sql)
+    cursor = db.execute(query, params)
     cursor.arraysize = 8192
     # Convert the file records into objects to make them sortable and
     # modifiable
@@ -602,15 +617,27 @@ from fmeta
 where checksum_beg is not null
   and checksum_end is not null
   and checksum_all is not null
+{extra_conditions}
 order by size, checksum_beg, checksum_end, checksum_all,
          inode, extents_hash, mtime, path
 """.strip()
 
-def gather_duplicates(db):
+def gather_duplicates(db, min_file_size=None, max_file_size=None):
+    # Build query and its parameters
+    extra_conditions = ''
+    params = {}
+    if min_file_size is not None:
+        extra_conditions += '  and size >= :min_file_size'
+        params['min_file_size'] = min_file_size
+    if max_file_size is not None:
+        extra_conditions += '  and size <= :max_file_size'
+        params['max_file_size'] = max_file_size
+    query = _select_duplicate_files_sql.format(
+        extra_conditions=extra_conditions)
     # Get rows that support access by name
     db.row_factory = sqlite3.Row
     # Select duplicate files
-    cursor = db.execute(_select_duplicate_files_sql)
+    cursor = db.execute(query, params)
     cursor.arraysize = 8192
     # Convert file records to objects
     files = fmeta_objs_from_records(cursor)
@@ -815,15 +842,16 @@ def report_table(): # TODO
 # Commands
 
 
-def find(db_filename):
+def find(db_filename, min_file_size=None, max_file_size=None):
     logger = logging.getLogger('find_dups')
     logger.info('Connecting to DB `{}`', db_filename)
     with sqlite3.connect(db_filename) as db:
-        find_duplicates(db)
+        find_duplicates(db, min_file_size, max_file_size)
     logger.info('Closed DB `{}`', db_filename)
 
 
-def report(db_filename, dedup, paths, pick_original):
+def report(db_filename, dedup, paths, pick_original,
+           min_file_size=None, max_file_size=None):
     logger = logging.getLogger('find_dups')
     # Get the deduplication command template
     ok, dedup, msg = interpret_dedup(dedup)
@@ -836,7 +864,8 @@ def report(db_filename, dedup, paths, pick_original):
     # Do the report
     logger.info('Connecting to DB `{}`', db_filename)
     with sqlite3.connect(db_filename) as db:
-        dups_groups = gather_duplicates(db)
+        dups_groups = gather_duplicates(
+            db, min_file_size, max_file_size)
         orgd_dups = map(
             lambda dups: organize_duplicates(
                 dups, pick_original, paths),
@@ -1188,4 +1217,4 @@ if __name__ == '__main__':
 
 # TODO parameterize hash
 # TODO migrate to `argparse`
-# TODO apply min / max sizes to DB queries
+# TODO move SQL close to use
