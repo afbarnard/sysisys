@@ -465,7 +465,7 @@ class FileMeta:
 
     def checksum_end(self):
         if self._checksum_end is None:
-            if self.size() < FileMeta.checksum_size:
+            if self.size() <= FileMeta.checksum_size:
                 self._checksum_end = self.checksum_beg()
             else:
                 self._checksum_end = checksum_file(
@@ -479,7 +479,7 @@ class FileMeta:
 
     def checksum_all(self):
         if self._checksum_all is None:
-            if self.size() < FileMeta.checksum_size:
+            if self.size() <= FileMeta.checksum_size:
                 self._checksum_all = self.checksum_beg()
             else:
                 self._checksum_all = checksum_file(
