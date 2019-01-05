@@ -144,9 +144,26 @@ create table if not exists fmeta (
 )
 """.strip()
 
+def create_tables(db):
+    # Start a new transaction
+    with db:
+        # Create a table to hold the file metadata
+        db.execute(_create_table_files_sql)
+    # Commit transaction
+
+
 _create_index_sql = """
 create index if not exists {} on fmeta ({})
 """.strip()
+
+def create_indexes(db):
+    # Start a new transaction
+    with db:
+        # Create indexes for size and inode
+        db.execute(_create_index_sql.format('idx_fmeta_size', 'size'))
+        #db.execute(_create_index_sql.format('idx_fmeta_inode', 'inode'))
+    # Commit transaction
+
 
 _select_basic_record_from_files_sql = """
 select size, inode, mtime, path from fmeta where path = ?
@@ -167,39 +184,6 @@ update fmeta set
   extents_hash = null
 where path = ?
 """.strip()
-
-_select_files_by_size_sql = """
-select size, inode, mtime, path, checksum_beg, checksum_end,
-    checksum_all, extents_hash
-from fmeta
-{where_clause}
-order by size asc
-""".strip()
-
-_update_hashes_sql = """
-update fmeta
-set checksum_beg = ?, checksum_end = ?, checksum_all = ?,
-    extents_hash = ?
-where path = ?
-""".strip()
-
-
-def create_tables(db):
-    # Start a new transaction
-    with db:
-        # Create a table to hold the file metadata
-        db.execute(_create_table_files_sql)
-    # Commit transaction
-
-
-def create_indexes(db):
-    # Start a new transaction
-    with db:
-        # Create indexes for size and inode
-        db.execute(_create_index_sql.format('idx_fmeta_size', 'size'))
-        #db.execute(_create_index_sql.format('idx_fmeta_inode', 'inode'))
-    # Commit transaction
-
 
 def load_file_metadata_records(records, db, commit_interval=1000):
     n_inserts = 0
@@ -557,6 +541,21 @@ def fmeta_objs_from_records(fmeta_records):
         except FileNotFoundError:
             pass
 
+
+_select_files_by_size_sql = """
+select size, inode, mtime, path, checksum_beg, checksum_end,
+    checksum_all, extents_hash
+from fmeta
+{where_clause}
+order by size asc
+""".strip()
+
+_update_hashes_sql = """
+update fmeta
+set checksum_beg = ?, checksum_end = ?, checksum_all = ?,
+    extents_hash = ?
+where path = ?
+""".strip()
 
 def find_duplicates(db, min_file_size=None, max_file_size=None):
     # Build query and its parameters
@@ -1217,4 +1216,3 @@ if __name__ == '__main__':
 
 # TODO parameterize hash
 # TODO migrate to `argparse`
-# TODO move SQL close to use
