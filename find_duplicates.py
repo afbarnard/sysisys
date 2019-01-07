@@ -393,8 +393,6 @@ class FileMeta:
             checksum_all=None,
             extents_hash=None,
     ):
-        if not os.path.exists(path):
-            raise FileNotFoundError(path)
         self._path = path
         self._size = size
         self._inode = inode
@@ -740,7 +738,7 @@ set -e
 
 # Log the given arguments as a message
 function log() {
-    echo "$(date +'%FT%T') dedup: ${@}" >&2
+    echo -e "$(date +'%FT%T') dedup: ${@}" >&2
 }
 
 # Log the given arguments as an error and die
@@ -754,6 +752,32 @@ function die() {
 function equal_extents() {
     cmp --quiet <(filefrag -ev "${1}" | grep -v -F "${1}") \\
                 <(filefrag -ev "${2}" | grep -v -F "${2}")
+}
+
+# Whether two files have the same contents, the same ownership and
+# permissions, and the same attributes
+function cmp_files_metas_attrs() {
+    # Compare size, type, access, uid, gid, atime, mtime, context
+    fmt='type: %F, size: %s, perms: %A, user: %u, group: %g, atime: %x, mtime: %y, context: %C'
+    metas1="$(stat --format "${fmt}" "${1}")"
+    metas2="$(stat --format "${fmt}" "${2}")"
+    if [[ "${metas1}" != "${metas2}" ]]; then
+        log "Error: File metadata differs:\\n  ${1}:\\n    ${metas1}\\n  ${2}:\\n    ${metas2}"
+        return 1
+    fi
+    # Compare extended attributes
+    attrs1="$(getfattr --dump "${1}" | sed -e 1d -e '$d' -e 's/^/    /' | sort)"
+    attrs2="$(getfattr --dump "${2}" | sed -e 1d -e '$d' -e 's/^/    /' | sort)"
+    if [[ "${attrs1}" != "${attrs2}" ]]; then
+        log "Error: File attributes differ:\\n  ${1}:\\n${attrs1}\\n  ${2}:\\n${attrs2}"
+        return 1
+    fi
+    # Finally, compare contents
+    if ! cmp --quiet "${1}" "${2}"; then
+        log "Error: File contents differ: sha256sums:\\n$(sha256sum "${1}" "${2}" | sed -e 's/^/  /')"
+        return 1
+    fi
+    return 0 # Everything checks out!
 }
 
 # Safely and accurately deduplicate two files.  It is safe and accurate
@@ -775,18 +799,22 @@ function dedup() {
     [[ -f "${copy}" ]] || die "Not an existing, regular file: '${copy}'"
     if [[ "${orig}" -ef "${copy}" ]] || \\
           equal_extents "${orig}" "${copy}"; then
+        log "Files already linked: '${orig}' <--> '${copy}'"
         return 0
     fi
     cmp --quiet "${orig}" "${copy}" || \\
         die "Files differ: '${orig}' =/= '${copy}'"
     # Safely deduplicate
-    log "Deduplicating '${orig}' <- '${copy}'"
+    log "Linking '${orig}' <-- '${copy}'"
     # Move the copy to make way for the link and to preserve the
     # original in case something goes wrong during deduplication
     bkup="${copy}.dedup.bak"
     mv "${copy}" "${bkup}"
     # Deduplicate
     ${dedup_cmd}
+    # Check deduplicated contents just to be sure
+    cmp_files_metas_attrs "${bkup}" "${copy}" || \\
+        die "Deduplication failed: Files differ"
     # Remove backup
     rm "${bkup}"
 }
@@ -1216,3 +1244,5 @@ if __name__ == '__main__':
 
 # TODO parameterize hash
 # TODO migrate to `argparse`
+# TODO store results of `stat` in DB to minimize FS accesses
+# TODO change to do only head and tail checksums to reduce seek thrashing
