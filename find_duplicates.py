@@ -340,7 +340,7 @@ def checksum_file(
     # positive but represent the same section of the file
     if chunk_size < 0:
         offset -= size
-    offset = offset % file_size
+    offset = offset % file_size if file_size > 0 else 0
     # Read the file
     logger.info('Checksumming file ({}): {!r}@{}+{}',
                 hash_name, filename, offset, size)
