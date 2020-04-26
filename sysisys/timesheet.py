@@ -27,7 +27,7 @@ class Token:
 
 class Date(Token):
 
-    pattern = re.compile(r'(\d{4})?([-/.])(\d{2})?\2(\d{2}):')
+    pattern = re.compile(r'(\d{4})?([-/.])(\d{2})?\2(\d{2}):(?=\s|\Z)')
 
     def __init__(self, year, month, day):
         self._year = year
@@ -44,13 +44,13 @@ class Date(Token):
 
 class TimeAmount(Token):
 
-    pattern = re.compile(r'(\d+):(\d{2})')
+    pattern = re.compile(r'(\d+):(\d{2})(?=\s|\Z)')
 
 
 class TimeRange(Token):
 
     pattern = re.compile(
-        r'(?:(\d{2})(:?)(\d{2}))?-(\d{2})(?(2)\2|:?)(\d{2})')
+        r'(?:(\d{2})(:?)(\d{2}))?-(\d{2})(?(2)\2|:?)(\d{2})(?=\s|\Z)')
 
 
 class Label(Token):
@@ -68,7 +68,7 @@ class Label(Token):
     # other:
     # * first "text:" on line is label unless post label ":text"
 
-    pattern = re.compile(r'-[a-zA-Z_]\w*:')
+    pattern = re.compile(r'-[a-zA-Z_]\w*:(?=\s|\Z)')
 
 
 class Whitespace(Token):

@@ -22,6 +22,9 @@ class PatternTest(unittest.TestCase):
         '2020-04-17:',
         '2020/04/17:',
         '2020.04.17:',
+        ('2020-04-17: ', 11),
+        ('2020/04/17:\t', 11),
+        ('2020.04.17:\n', 11),
         # Dates without a year
         '-06-20:',
         '/06/20:',
@@ -36,7 +39,9 @@ class PatternTest(unittest.TestCase):
         '1900-10-01',
         '1900-10-1:',
         '1900-10/01:',
-        '1900-10-01\:',
+        '1900-10-01\\:',
+        '1900-10-01:10:01',
+        '1900-10-01:z',
         '-06-20',
         '/06/2:',
         '.06-20:',
@@ -54,11 +59,18 @@ class PatternTest(unittest.TestCase):
         '12:34',
         '123:45',
         '1234:56',
+        ('0:00 ', 4),
+        ('10:00\t', 5),
+        ('100:00\n', 6),
     )
 
     non_time_amounts = (
         '0:0',
         '0:012',
+        '0:00a',
+        '0:00.',
+        '0\\:00',
+        '\\0:00',
         '0.00',
     )
 
@@ -69,24 +81,38 @@ class PatternTest(unittest.TestCase):
         # Continuing
         '-6251',
         '-62:51',
+        # With trailing spaces
+        ('8795-7428 ', 9),
+        ('87:95-74:28\t', 11),
+        ('-6251\n', 5),
+        ('-62:51 ', 6),
     )
 
     non_time_ranges = (
+        '8795-74288',
+        '87955-7428',
         '8795-742',
         '879-7428',
         '87:95-7428',
+        '87:95-74:28.',
         '8795-74:28',
-        '8795\-7428',
-        '87:95-74\:28',
+        '8795\\-7428',
+        '87:95-74\\:28',
         '-625',
         '-62512',
+        '-6251a',
+        '-6251.0',
         '-62:512',
+        '\\-1234',
     )
 
     labels = (
         '-a:',
         '-a1:',
         '-_:',
+        ('-a: ', 3),
+        ('-a1:\t', 4),
+        ('-_:\n', 3),
     )
 
     non_labels = (
@@ -104,10 +130,11 @@ class PatternTest(unittest.TestCase):
         '-1',
         '1:',
         '-a:b',
+        '-a1:2',
+        '-_:.',
         '-a-:',
-        r'-a\:',
-        r'\-a:',
-        r'\-a\:',
+        '-a\\:',
+        '\\-a:',
     )
 
     whitespace = (
@@ -164,8 +191,8 @@ class PatternTest(unittest.TestCase):
     )
 
     non_comments = (
-        '\#',
-        '\#123',
+        '\\#',
+        '\\#123',
     )
 
     words = (
@@ -245,16 +272,6 @@ class PatternTest(unittest.TestCase):
         string.punctuation,
     )
 
-    non_words = (
-        # Non-breaking spaces on their own
-        '\u00a0\u2007\u202f',
-        # Characters with intervening spaces
-        '—\u2003—',
-        # Strings with spaces
-        "'the raven'",
-        '"no strings"',
-    )
-
     all_texts = {
         dates, non_dates,
         time_amounts, non_time_amounts,
@@ -263,18 +280,26 @@ class PatternTest(unittest.TestCase):
         whitespace,
         newlines,
         comments, non_comments,
-        words, # Except `non_words`
+        words,
     }
 
     def _test_pattern(self, pattern, texts, non_texts):
         # Matches
         for text in texts:
             with self.subTest(repr(text)):
-                self.assertIsNotNone(pattern.fullmatch(text))
+                if isinstance(text, str):
+                    match_len = len(text)
+                else:
+                    text, match_len = text
+                match = pattern.match(text)
+                self.assertIsNotNone(match)
+                self.assertEqual(match_len, match.end())
         # Non matches
         for text in non_texts:
             with self.subTest(repr(text)):
-                self.assertIsNone(pattern.fullmatch(text))
+                if not isinstance(text, str):
+                    text, _ = text
+                self.assertIsNone(pattern.match(text))
 
     def test_date(self):
         self._test_pattern(
@@ -330,7 +355,6 @@ class PatternTest(unittest.TestCase):
                 self.non_comments,
             ),
             itools.chain(
-                self.non_words,
                 self.whitespace,
                 self.newlines,
             ),
