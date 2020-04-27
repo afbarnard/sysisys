@@ -7,7 +7,9 @@
 # (https://choosealicense.com/licenses/mit/).
 
 
+import io
 import itertools as itools
+import re
 import string
 import unittest
 
@@ -361,8 +363,154 @@ class PatternTest(unittest.TestCase):
         )
 
 
-class TokenTest(unittest.TestCase):
-    pass
+class LineTokenizerTest(unittest.TestCase):
+
+    # Simplified patterns
+    letters_pattern = re.compile('[a-zA-Z]+')
+    digits_pattern = re.compile('[0-9]+')
+    whitespace_pattern = re.compile('[ \t\n]+')
+    punctuation_pattern = re.compile('[-,.?!:;\'"–—()/]')
+
+    def setUp(self):
+        self.tknzr = ts.LineTokenizer(
+            (self.letters_pattern,
+             lambda m, f, l, c: ('w', m.end() - m.start(), m.group(0))),
+            (self.digits_pattern,
+             lambda m, f, l, c: ('n', m.end() - m.start(), m.group(0))),
+            (self.whitespace_pattern,
+             lambda m, f, l, c: ('s', m.end() - m.start(), m.group(0))),
+            (self.punctuation_pattern,
+             lambda m, f, l, c: ('p', m.end() - m.start(), m.group(0))),
+        )
+
+    def test_empty(self):
+        self.assertEqual(list(self.tknzr.tokens('')), [])
+
+    def test_word(self):
+        self.assertEqual(
+            list(self.tknzr.tokens('craquelure')),
+            [('w', 10, 'craquelure')])
+
+    def test_number(self):
+        self.assertEqual(
+            list(self.tknzr.tokens('2718')),
+            [('n', 4, '2718')])
+
+    def test_space(self):
+        for c in ' \t\n':
+            with self.subTest(repr(c)):
+                self.assertEqual(
+                    list(self.tknzr.tokens(c)),
+                    [('s', 1, c)])
+
+    def test_hello_world(self):
+        self.assertEqual(
+            list(self.tknzr.tokens('Hello, world!\n')),
+            [('w', 5, 'Hello'), ('p', 1, ','), ('s', 1, ' '),
+             ('w', 5, 'world'), ('p', 1, '!'), ('s', 1, '\n')])
+
+    def test_sonnet(self):
+        sonnet = io.StringIO('''
+Cupid laid by his brand, and fell asleep.
+A maid of Dian's this advantage found,
+And his love-kindling fire did quickly steep
+In a cold valley-fountain of that ground;
+Which borrow'd from this holy fire of Love
+A dateless lively heat, still to endure,
+And grew a seething bath, which yet men prove
+Against strange maladies a sovereign cure.
+But at my mistress' eye Love's brand new-fired,
+The boy for trial needs would touch my breast;
+I, sick withal, the help of bath desired,
+And thither hied, a sad distemper'd guest,
+  But found no cure: the bath for my help lies
+  Where Cupid got new fire—my mistress' eyes.
+'''.strip())
+        # Tokens per line:
+        # 18 (18), 17 (35), 16 (51), 17 (68),
+        # 18 (86), 16 (102), 19 (121), 13 (134),
+        # 22 (156), 19 (175), 19 (194), 18 (212),
+        # 21 (233), 18 (251),
+        tokens = list(self.tknzr.tokens(sonnet))
+        self.assertEqual(tokens[0], ('w', 5, 'Cupid'))
+        self.assertEqual(
+            tokens[13:17],
+            [('w', 4, 'fell'), ('s', 1, ' '),
+             ('w', 6, 'asleep'), ('p', 1, '.')])
+        self.assertEqual(
+            tokens[24:27],
+            [('w', 4, 'Dian'), ('p', 1, "'"), ('w', 1, 's')])
+        self.assertEqual(
+            tokens[39:42],
+            [('w', 4, 'love'), ('p', 1, '-'), ('w', 8, 'kindling')])
+        self.assertEqual(
+            tokens[233:],
+            [('s', 1, '\n'), ('s', 2, '  '),
+             ('w', 5, 'Where'), ('s', 1, ' '),
+             ('w', 5, 'Cupid'), ('s', 1, ' '),
+             ('w', 3, 'got'), ('s', 1, ' '),
+             ('w', 3, 'new'), ('s', 1, ' '),
+             ('w', 4, 'fire'), ('p', 1, '—'),
+             ('w', 2, 'my'), ('s', 1, ' '),
+             ('w', 8, 'mistress'), ('p', 1, "'"), ('s', 1, ' '),
+             ('w', 4, 'eyes'), ('p', 1, '.')])
+
+    def test_none_constructor(self):
+        tknzr = ts.LineTokenizer(
+            (self.letters_pattern,
+             lambda m, f, l, c: ('w', m.end() - m.start(), m.group(0))),
+            (self.digits_pattern, None),
+            (self.whitespace_pattern, None),
+            (self.punctuation_pattern, None),
+            no_match=ts.LineTokenizer.NoMatchAction.skip_char,
+        )
+        self.assertEqual(
+            list(tknzr.tokens('¡Hello, 1 _great_ *big* world!')),
+            [('w', 5, 'Hello'), ('w', 5, 'great'), ('w', 3, 'big'),
+             ('w', 5, 'world')])
+
+    def test_no_match_action_quit(self):
+        self.tknzr._no_match = ts.LineTokenizer.NoMatchAction.quit
+        self.assertEqual(
+            list(self.tknzr.tokens('Hello, garbl`d!')),
+            [('w', 5, 'Hello'), ('p', 1, ','), ('s', 1, ' '),
+             ('w', 5, 'garbl')])
+
+    def test_no_match_action_skip_char(self):
+        self.tknzr._no_match = ts.LineTokenizer.NoMatchAction.skip_char
+        self.assertEqual(
+            list(self.tknzr.tokens('Hello, garbl`d!')),
+            [('w', 5, 'Hello'), ('p', 1, ','), ('s', 1, ' '),
+             ('w', 5, 'garbl'), ('w', 1, 'd'), ('p', 1, '!')])
+
+    def test_no_match_action_skip_line(self):
+        self.tknzr._no_match = ts.LineTokenizer.NoMatchAction.skip_line
+        self.assertEqual(
+            list(self.tknzr.tokens('Hello, garbl`d!\r\nBye.')),
+            [('w', 5, 'Hello'), ('p', 1, ','), ('s', 1, ' '),
+             ('w', 5, 'garbl'), #('s', 2, '\r\n'), # TODO Skip or include EOL?
+             ('w', 3, 'Bye'), ('p', 1, '.')])
+
+    def test_no_match_action_raise_error(self):
+        with self.assertRaises(ts.ParseError) as raises:
+            list(self.tknzr.tokens(
+                '\nHello, garbl`d~@#$%^&*_!', filename='<str>'))
+        err = raises.exception
+        self.assertEqual(err.filename, '<str>')
+        self.assertEqual(err.line, 2)
+        self.assertEqual(err.column, 13)
+        self.assertEqual(err.text, '`d~@#$%^&*_!')
+
+    def test_no_match_action_handler_function(self):
+        def mk_unknown(text, filename, line, column):
+            match = re.match('[^a-zA-Z0-9 \t\n,.?!:;\'"–—()/-]+', text)
+            return (('?', len(match[0]), match[0]), len(match[0]))
+        self.tknzr._no_match = mk_unknown
+        self.assertEqual(
+            list(self.tknzr.tokens('Hello|_garbl`ð¿\nErr@π𝑖¡»')),
+            [('w', 5, 'Hello'), ('?', 2, '|_'),
+             ('w', 5, 'garbl'), ('?', 3, '`ð¿'), ('s', 1, '\n'),
+             ('w', 3, 'Err'), ('?', 5, '@π𝑖¡»')])
 
 
 class FillInDataTest(unittest.TestCase):

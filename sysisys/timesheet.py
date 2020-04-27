@@ -13,6 +13,43 @@ data.
 import re
 
 
+# Errors
+
+
+class ParseError(Exception):
+
+    def __init__(
+            self,
+            filename=None,
+            line=None,
+            column=None,
+            text=None,
+            message=None,
+    ):
+        self.filename = filename
+        self.line = line
+        self.column = column
+        self.text = text
+        self.message = message
+
+    def __str__(self):
+        pieces = ['Parse error']
+        if self.filename is not None:
+            pieces.append(f" in '{self._filename!r}'")
+        if self.line is not None:
+            pieces.append(f' at line {self._line}')
+        if self.column is not None:
+            pieces.append(' at' if self._line is None else ',')
+            pieces.append(f' column {self._column}')
+        if self.message is not None:
+            pieces.append(': ')
+            pieces.append(self._message)
+        if self.text is not None:
+            pieces.append(': ')
+            pieces.append(f'{self._text!r}')
+        return ''.join(pieces)
+
+
 # Tokens
 
 
@@ -117,3 +154,71 @@ class Word(Token):
     # Any sequence of non-whitespace possibly followed by more
     # non-whitespace and non-breaking spaces
     pattern = re.compile(r'\S[\S\u00a0\u2007\u202f]*')
+
+
+class LineTokenizer: # TODO doc # TODO make adaptive
+
+    class NoMatchAction:
+
+        @staticmethod
+        def quit(text, filename, line, column):
+            return StopIteration(), 0
+
+        @staticmethod
+        def skip_char(text, filename, line, column):
+            return None, 1
+
+        @staticmethod
+        def skip_line(text, filename, line, column):
+            return None, len(text)
+
+        @staticmethod
+        def raise_error(text, filename, line, column):
+            raise ParseError(filename, line, column, text)
+
+    def __init__(
+            self,
+            *pattern_constructor_pairs,
+            no_match=NoMatchAction.raise_error,
+    ):
+        self._patterns = list(pattern_constructor_pairs)
+        if not callable(no_match):
+            raise TypeError('`no_match` is not a callable: '
+                            '{no_match!r}')
+        self._no_match = no_match
+
+    def tokens(self, file, filename=None):
+        # Make sure `file` is an iterable of strings
+        if isinstance(file, str):
+            file = file.splitlines(keepends=True)
+        # Split the input into tokens
+        n_lines = 0
+        # Process each line separately
+        for line in file:
+            n_lines += 1
+            idx = 0
+            # Split this line into tokens by matching a pattern at the
+            # start of the unprocessed input, capturing that match in a
+            # token, advancing the input, and repeating
+            while idx < len(line):
+                matched = False
+                for pattern, constructor in self._patterns:
+                    match = pattern.match(line, idx)
+                    if match is not None:
+                        matched = True
+                        if constructor is not None:
+                            yield constructor(
+                                match, filename, n_lines, idx + 1)
+                        idx = match.end()
+                        break
+                # If no match, call the no match handler and proceed
+                if not matched:
+                    token, length = self._no_match(
+                        line[idx:], filename, n_lines, idx + 1)
+                    if token is None:
+                        pass
+                    elif isinstance(token, StopIteration):
+                        return
+                    else:
+                        yield token
+                    idx += length
