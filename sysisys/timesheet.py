@@ -35,18 +35,18 @@ class ParseError(Exception):
     def __str__(self):
         pieces = ['Parse error']
         if self.filename is not None:
-            pieces.append(f" in '{self._filename!r}'")
+            pieces.append(f' in {self.filename!r}')
         if self.line is not None:
-            pieces.append(f' at line {self._line}')
+            pieces.append(f' at line {self.line}')
         if self.column is not None:
-            pieces.append(' at' if self._line is None else ',')
-            pieces.append(f' column {self._column}')
+            pieces.append(' at' if self.line is None else ',')
+            pieces.append(f' column {self.column}')
         if self.message is not None:
             pieces.append(': ')
-            pieces.append(self._message)
+            pieces.append(self.message)
         if self.text is not None:
             pieces.append(': ')
-            pieces.append(f'{self._text!r}')
+            pieces.append(f'{self.text!r}')
         return ''.join(pieces)
 
 
@@ -61,33 +61,69 @@ class Token:
     def __hash__(self):
         return hash(self.__dict__)
 
+    @classmethod
+    def from_match(cls, match, filename, line, column):
+        return cls(match.group(1))
+
+    @classmethod
+    def tokenizer_pair(cls):
+        return cls.pattern, cls.from_match
+
 
 class Date(Token):
 
     pattern = re.compile(r'(\d{4})?([-/.])(\d{2})?\2(\d{2}):(?=\s|\Z)')
 
-    def __init__(self, year, month, day):
+    def __init__(self, year=None, month=None, day=None, sep=None):
         self._year = year
         self._month = month
         self._day = day
-
-    @staticmethod
-    def from_match(match, line, column):
-        return Date(*match.groups(1, 3, 4))
+        self._sep = sep
 
     def __repr__(self):
-        return f'Date({self._year!r}, {self._month!r}, {self._day!r})'
+        return (f'Date({self._year!r}, {self._month!r}, '
+                f'{self._day!r}, {self._sep!r})')
+
+    @staticmethod
+    def from_match(match, filename, line, column):
+        return Date(*match.group(1, 3, 4, 2))
 
 
 class TimeAmount(Token):
 
     pattern = re.compile(r'(\d+):(\d{2})(?=\s|\Z)')
 
+    def __init__(self, hours=None, minutes=None):
+        self._hours = hours
+        self._minutes = minutes
+
+    def __repr__(self):
+        return f'TimeAmount({self._hours!r}, {self._minutes!r})'
+
+    @staticmethod
+    def from_match(match, filename, line, column):
+        return TimeAmount(*match.group(1, 2))
+
 
 class TimeRange(Token):
 
     pattern = re.compile(
-        r'(?:(\d{2})(:?)(\d{2}))?-(\d{2})(?(2)\2|:?)(\d{2})(?=\s|\Z)')
+        r'(?:(\d{2})(:?)(\d{2}))?-(\d{2})((?(2)\2|:?))(\d{2})'
+        r'(?=\s|\Z)')
+
+    def __init__(self, beg=None, end=None, sep=None):
+        self._beg = beg if beg != (None, None) else None
+        self._end = end
+        self._sep = sep
+
+    def __repr__(self):
+        return (f'TimeRange({self._beg!r}, {self._end!r}, '
+                f'{self._sep!r})')
+
+    @staticmethod
+    def from_match(match, filename, line, column):
+        return TimeRange(match.group(1, 3), match.group(4, 6),
+                         match.group(5))
 
 
 class Label(Token):
@@ -105,14 +141,20 @@ class Label(Token):
     # other:
     # * first "text:" on line is label unless post label ":text"
 
-    pattern = re.compile(r'-[a-zA-Z_]\w*:(?=\s|\Z)')
+    pattern = re.compile(r'-([a-zA-Z_]\w*):(?=\s|\Z)')
+
+    def __init__(self, name):
+        self._name = name
+
+    def __repr__(self):
+        return f'Label({self._name!r})'
 
 
 class Whitespace(Token):
 
     # Any sequence of Unicode whitespace characters that are not newlines
     pattern = re.compile(
-        '['
+        '(['
         # ASCII space and tab
         ' \t'
         # Unicode, ordered by expected frequency
@@ -132,8 +174,14 @@ class Whitespace(Token):
         '\u2000' # En quad (same as en space)
         '\u2001' # Em quad (same as em space)
         '\u1680' # Ogham space mark
-        ']+'
+        ']+)'
     )
+
+    def __init__(self, text):
+        self._text = text
+
+    def __repr__(self):
+        return f'Whitespace({self._text!r})'
 
 
 class Newline(Token):
@@ -141,12 +189,24 @@ class Newline(Token):
     # Newlines as pairs or individual characters.  DOS, Acorn, Unix,
     # Mac, vertical tab, form feed, line separator, paragraph separator,
     # next line (NEL)
-    pattern = re.compile('\r\n|\n\r|[\n\r\v\f\u2028\u2029\u0085]')
+    pattern = re.compile('(\r\n|\n\r|[\n\r\v\f\u2028\u2029\u0085])')
+
+    def __init__(self, text):
+        self._text = text
+
+    def __repr__(self):
+        return f'Newline({self._text!r})'
 
 
 class Comment(Token):
 
-    pattern = re.compile(r'#[^\n\r\v\f\u2028\u2029\u0085]*')
+    pattern = re.compile(r'(#[^\n\r\v\f\u2028\u2029\u0085]*)')
+
+    def __init__(self, text):
+        self._text = text
+
+    def __repr__(self):
+        return f'Comment({self._text!r})'
 
 
 class Word(Token):
@@ -154,6 +214,24 @@ class Word(Token):
     # Any sequence of non-whitespace possibly followed by more
     # non-whitespace and non-breaking spaces
     pattern = re.compile(r'\S[\S\u00a0\u2007\u202f]*')
+
+    def __init__(self, text):
+        self._text = text
+
+    def __repr__(self):
+        return f'Word({self._text!r})'
+
+    @staticmethod
+    def from_match(match, filename, line, column):
+        return Word(match.group(0))
+
+    @staticmethod
+    def match(text, filename, line, column):
+        match = Word.pattern.match(text)
+        if match is None:
+            raise ParseError(filename, line, column, text, 'Not a word')
+        return (Word.from_match(match, filename, line, column),
+                match.end() - match.start())
 
 
 class LineTokenizer: # TODO doc # TODO make adaptive
@@ -222,3 +300,19 @@ class LineTokenizer: # TODO doc # TODO make adaptive
                     else:
                         yield token
                     idx += length
+
+
+_tokenizer = LineTokenizer(
+    Date.tokenizer_pair(),
+    TimeAmount.tokenizer_pair(),
+    TimeRange.tokenizer_pair(),
+    Label.tokenizer_pair(),
+    Comment.tokenizer_pair(),
+    Whitespace.tokenizer_pair(),
+    Newline.tokenizer_pair(),
+    no_match=Word.match,
+)
+
+
+def tokens(file, filename=None):
+    return _tokenizer.tokens(file, filename)

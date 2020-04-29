@@ -363,6 +363,21 @@ class PatternTest(unittest.TestCase):
         )
 
 
+class ParseErrorTest(unittest.TestCase):
+
+    def test___str__(self):
+        e = ts.ParseError(
+            text='¿¡!?',
+            message='Not a word',
+            filename='<str>',
+            line='254',
+            column='14',
+        )
+        msg = ("Parse error in '<str>' at line 254, column 14: "
+               "Not a word: '¿¡!?'")
+        self.assertEqual(str(e), msg)
+
+
 class LineTokenizerTest(unittest.TestCase):
 
     # Simplified patterns
@@ -511,6 +526,91 @@ And thither hied, a sad distemper'd guest,
             [('w', 5, 'Hello'), ('?', 2, '|_'),
              ('w', 5, 'garbl'), ('?', 3, '`ð¿'), ('s', 1, '\n'),
              ('w', 3, 'Err'), ('?', 5, '@π𝑖¡»')])
+
+
+class TokensTest(unittest.TestCase):
+
+    def test_date(self):
+        self.assertEqual(list(ts.tokens('2020-04-28:')),
+                         [ts.Date('2020', '04', '28', '-')])
+        self.assertEqual(list(ts.tokens('-04-28:')),
+                         [ts.Date(month='04', day='28', sep='-')])
+        self.assertEqual(list(ts.tokens('--28:')),
+                         [ts.Date(day='28', sep='-')])
+
+    def test_time_amount(self):
+        self.assertEqual(list(ts.tokens('12:34')),
+                         [ts.TimeAmount('12', '34')])
+
+    def test_time_range(self):
+        self.assertEqual(
+            list(ts.tokens('2020-0428')),
+            [ts.TimeRange(('20', '20'), ('04', '28'), sep='')])
+        self.assertEqual(
+            list(ts.tokens('-0428')),
+            [ts.TimeRange((None, None), ('04', '28'), sep='')])
+
+    def test_label(self):
+        self.assertEqual(list(ts.tokens('-lbl:')),
+                         [ts.Label('lbl')])
+
+    def test_words(self):
+        text = ('2020-04-28 --01:0 //12 12:345 1234-56789 -12345 '
+                '-word!: \\#123')
+        tkns = [
+            ts.Word('2020-04-28'), ts.Whitespace(' '),
+            ts.Word('--01:0'), ts.Whitespace(' '),
+            ts.Word('//12'), ts.Whitespace(' '),
+            ts.Word('12:345'), ts.Whitespace(' '),
+            ts.Word('1234-56789'), ts.Whitespace(' '),
+            ts.Word('-12345'), ts.Whitespace(' '),
+            ts.Word('-word!:'), ts.Whitespace(' '),
+            ts.Word('\\#123'),
+        ]
+        self.assertEqual(list(ts.tokens(text)), tkns)
+
+    def test_comment(self):
+        self.assertEqual(list(ts.tokens('# comment')),
+                         [ts.Comment('# comment')])
+
+    def test_whitespace(self):
+        self.assertEqual(list(ts.tokens('\t\t  ')),
+                         [ts.Whitespace('\t\t  ')])
+
+    def test_newline(self):
+        self.assertEqual(list(ts.tokens('\r\n')),
+                         [ts.Newline('\r\n')])
+
+    def test_excerpt(self):
+        file = io.StringIO('''
+# Test time entries
+2020-04-28:  0:14 -play:  abc\r\n123\u00a0456
+--29:\t2002-2020 hard
+-05-01:\r0808-0909 -work: e-mail
+\t-1010 calendar, planning! # What to do?  When?
+'''.lstrip())
+        tkns = [
+            ts.Comment('# Test time entries'), ts.Newline('\n'),
+            ts.Date('2020', '04', '28', '-'), ts.Whitespace('  '),
+            ts.TimeAmount('0', '14'), ts.Whitespace(' '),
+            ts.Label('play'), ts.Whitespace('  '),
+            ts.Word('abc'), ts.Newline('\r\n'),
+            ts.Word('123\u00a0456'), ts.Newline('\n'),
+            ts.Date(day='29', sep='-'), ts.Whitespace('\t'),
+            ts.TimeRange(('20', '02'), ('20', '20'), sep=''),
+            ts.Whitespace(' '),
+            ts.Word('hard'), ts.Newline('\n'),
+            ts.Date(month='05', day='01', sep='-'), ts.Newline('\r'),
+            ts.TimeRange(('08', '08'), ('09', '09'), sep=''),
+            ts.Whitespace(' '),
+            ts.Label('work'), ts.Whitespace(' '),
+            ts.Word('e-mail'), ts.Newline('\n'), ts.Whitespace('\t'),
+            ts.TimeRange(end=('10', '10'), sep=''), ts.Whitespace(' '),
+            ts.Word('calendar,'), ts.Whitespace(' '),
+            ts.Word('planning!'), ts.Whitespace(' '),
+            ts.Comment('# What to do?  When?'), ts.Newline('\n'),
+        ]
+        self.assertEqual(list(ts.tokens(file)), tkns)
 
 
 class FillInDataTest(unittest.TestCase):
