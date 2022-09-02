@@ -46,24 +46,34 @@ function create_xattrs() {
     setfattr -n user.inode -v $(stat --format '%i' "${1}") "${1}"
 }
 
+# TODO test files: inline, empty, large, 1 bit differences both in head and tail and on boundary
+# TODO write tests in Python, use chunk of tmpfs to make btrfs
+# TODO test deduping of symlink against original
+
 function create_test_files() {
     log "Creating test files in directory: '${1}'"
-    # Make a 128K original file by repeating a random block
-    head --bytes 1K /dev/urandom > "${1}/block"
-    yes "${1}/block" | head -n 128 | xargs cat > "${1}/copy1"
+    # Create some building blocks (but don't use up too much randomness)
+    head --bytes 1K /dev/urandom > "${1}/block1"
+    tac "${1}/block1" > "${1}/block2"
+    # Make 128K original files by repeating a block
+    yes "${1}/block1" | head -n 128 | xargs cat > "${1}/copy1"
+    yes "${1}/block2" | head -n 128 | xargs cat > "${1}/copy2"
 
     # Create copies
-    cp "${1}/copy"{1,2}
     mkdir "${1}/dir"
-    cp "${1}/copy1" "${1}/dir/copy3"
+    cp "${1}/copy"{1,3}
+    cp "${1}/copy1" "${1}/dir/copy4"
+    cp "${1}/block"{1,3}
+    cp "${1}/block"{2,4}
 
     # Create links
     create_links "${1}/copy1"
-    create_links "${1}/copy2"
-    create_links "${1}/dir/copy3"
+    create_links "${1}/copy3"
+    create_links "${1}/dir/copy4"
 
     # Create distractors of the same size but different contents
-    head --bytes 128K /dev/zero > "${1}/zeros"
+    head --bytes 1K /dev/zero > "${1}/block0"
+    head --bytes 128K /dev/zero > "${1}/copy0"
     base64 "${1}/copy1" | head --bytes 128K > "${1}/base64"
     rev "${1}/base64" > "${1}/dir/46esab"
 
@@ -81,6 +91,7 @@ function test_find_duplicates() {
     files_dir="${tmp_dir}/files"
     mkdir "${files_dir}"
     create_test_files "${files_dir}"
+    return
 
     # Run `find_duplicates.py`
     (
